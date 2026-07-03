@@ -128,7 +128,7 @@ onMounted(() => {
     boy.setWalking(boyMoving)
     boy.update(dt)
 
-    thirdPersonCam.update(dt)
+    thirdPersonCam.update(dt, playerMoving)
 
     if (uiState.phase === 'playing') {
       const tension = zoneDirector.update(dt)

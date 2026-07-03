@@ -1,8 +1,18 @@
 import * as THREE from 'three'
 
+function angleLerp(a, b, t) {
+  const diff = ((b - a + Math.PI * 3) % (Math.PI * 2)) - Math.PI
+  return a + diff * t
+}
+
 // Orbits behind/above a target. Drag with the mouse to look around; movement
 // elsewhere in the app is expected to read `getYaw()` to move relative to
-// whatever direction the camera is currently facing.
+// whatever direction the camera is currently facing. While the target is
+// moving (and the player isn't actively dragging), the camera also slowly
+// swings its yaw around to settle back behind whichever way the target is
+// currently facing — player.js sets the target's rotation.y to match its
+// movement direction, and camera-relative "forward" is (sin(yaw), -cos(yaw)),
+// so the camera ends up behind the target when yaw = PI - target.rotation.y.
 export function createThirdPersonCamera(camera, target, canvas, options = {}) {
   let yaw = options.yaw ?? Math.PI
   let pitch = options.pitch ?? 0.42
@@ -11,6 +21,9 @@ export function createThirdPersonCamera(camera, target, canvas, options = {}) {
   const maxPitch = options.maxPitch ?? 1.1
   const lookHeight = options.lookHeight ?? 1.5
   const obstacles = options.obstacles ?? []
+  // How eagerly the camera swings back behind the target while it's moving
+  // — smaller is slower/lazier, closer to 1 is near-instant.
+  const followRate = options.followRate ?? 0.002
   // Safety floor only (keeps the camera from landing on top of the target
   // if an obstacle is right up against it) — NOT a comfortable minimum,
   // since it must never exceed the space a small room can actually offer.
@@ -72,8 +85,14 @@ export function createThirdPersonCamera(camera, target, canvas, options = {}) {
     }
   }
 
-  function update(dt) {
+  function update(dt, isMoving = false) {
     target.getWorldPosition(targetPos)
+
+    if (isMoving && !dragging) {
+      const desiredYaw = Math.PI - target.rotation.y
+      const followFactor = 1 - Math.pow(followRate, dt)
+      yaw = angleLerp(yaw, desiredYaw, followFactor)
+    }
 
     const horizontal = distance * Math.cos(pitch)
     const vertical = distance * Math.sin(pitch)

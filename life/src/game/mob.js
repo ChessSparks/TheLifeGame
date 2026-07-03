@@ -50,11 +50,11 @@ export function createMobCrowd(count = 16, options = {}) {
   const spawnZRange = options.spawnZRange ?? [ROAD_Z - 1.5, ROAD_Z + 1.5]
   // The driveway junction where the road meets the path to the house.
   const roadJunction = options.roadJunction ?? { x: 0, z: ROAD_Z }
-  // Yard sits between the house's front door at z~6.8 and the fence's
-  // street-facing gate at z=9.
-  const gatherZRange = options.gatherZRange ?? [7.6, 8.8]
-  const gatherXRange = options.gatherXRange ?? [-3.5, 1.5]
-  const doorZ = options.doorZ ?? 7.3
+  // Yard sits between the house's front door at z~8.5 and the fence's
+  // street-facing gate at z=10.3.
+  const gatherZRange = options.gatherZRange ?? [8.9, 10.0]
+  const gatherXRange = options.gatherXRange ?? [-4.0, 2.0]
+  const doorZ = options.doorZ ?? 9.0
   const doorXRange = options.doorXRange ?? [-0.5, 0.5]
   const doorFraction = options.doorFraction ?? 0.25
   const speedRange = options.speedRange ?? [1.6, 2.4]

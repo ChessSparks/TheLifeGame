@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { TorchGroup, createEmberField, updateEmberField } from './effects'
 import { makeMoonTexture, makeGlowTexture } from './textures'
-import { brick, slopeRoof, baseplateTile, BRICK_H, STUD } from './lego'
+import { brick, slopeRoof, baseplateTile, BRICK_H, STUD, buildMinifigure } from './lego'
 
 // Ground elevation keyframes: [z, groundY]. Linear interpolation between them.
 const GROUND_KEYS = [
@@ -117,9 +117,9 @@ const WALL_H = WALL_UNITS * BRICK_H
 // of the escape sequence's z-thresholds are calibrated relative to it) —
 // only the front (street-facing) side extends further out and the walls
 // widen to make the house bigger.
-const HOUSE_HALF_WIDTH = 3.8
+const HOUSE_HALF_WIDTH = 5.4
 const HOUSE_BACK_Z = -1
-const HOUSE_FRONT_Z = 6.8
+const HOUSE_FRONT_Z = 8.5
 const HOUSE_WIDTH = HOUSE_HALF_WIDTH * 2
 const HOUSE_DEPTH = HOUSE_FRONT_Z - HOUSE_BACK_Z + 1.2
 const HOUSE_CENTER_Z = (HOUSE_BACK_Z + HOUSE_FRONT_Z) / 2
@@ -132,33 +132,27 @@ const WALL_SEGMENT_CENTER_X = (HOUSE_HALF_WIDTH + OPENING_HALF_WIDTH) / 2
 // through the back window, not out the front (see ZoneDirector's
 // front-door barrier check in zones.js).
 export const FRONT_BARRIER_Z = HOUSE_FRONT_Z - 1.3
+// How tall the back opening's sill is — this is what makes it read as a
+// window (an opening that starts above the floor, low enough to still
+// climb through) rather than a second door identical to the front one.
+const WINDOW_SILL_H = 0.9
 
-// A small blanketed shape with a head peeking out — reads as a sleeping
-// child at a glance without needing the full minifigure rig lying down.
+// The same minifigure used for the standalone "boy" figure (see
+// createBoyFigure() in characters.js), laid on its back on the mattress —
+// reads as a normal LEGO minifigure asleep, rather than an ad-hoc blob.
 function buildSleepingChild() {
-  const group = new THREE.Group()
-  const blanketMat = new THREE.MeshStandardMaterial({ color: 0x8a3a3a, flatShading: true })
-  const blanket = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.24, 1.35), blanketMat)
-  blanket.position.set(0, 0.12, 0.05)
-  blanket.castShadow = true
-  blanket.receiveShadow = true
-  group.add(blanket)
-
-  const headMat = new THREE.MeshStandardMaterial({ color: 0xf2c48d, flatShading: true })
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.17, 10, 8), headMat)
-  head.position.set(0, 0.16, -0.7)
-  head.castShadow = true
-  group.add(head)
-
-  const hairMat = new THREE.MeshStandardMaterial({ color: 0x4a3222, flatShading: true })
-  const hair = new THREE.Mesh(
-    new THREE.SphereGeometry(0.18, 10, 6, 0, Math.PI * 2, 0, Math.PI * 0.55),
-    hairMat
+  const outer = new THREE.Group()
+  const { group } = buildMinifigure(
+    { torso: 0xd4453a, legs: 0x2f3a5f, head: 0xf2c48d, hair: 0x4a3222 },
+    { scale: 0.62 }
   )
-  hair.position.set(0, 0.22, -0.7)
-  group.add(hair)
-
-  return group
+  // Standing, the rig's feet are at local y=0 and it extends upward along
+  // +y; rotating -90 degrees about X lays it flat, extending along -z from
+  // the origin. Center that span on the mattress and rest it on top.
+  group.rotation.x = -Math.PI / 2
+  group.position.set(0, 0, 0.55)
+  outer.add(group)
+  return outer
 }
 
 function buildHouse() {
@@ -170,7 +164,10 @@ function buildHouse() {
   floor.receiveShadow = true
   group.add(floor)
 
-  // Back wall (z = -1), split to leave a window/exit gap in the middle.
+  // Back wall (z = -1), split to leave a window opening in the middle — a
+  // real window, not another door, so it reads distinctly from the front:
+  // a solid sill fills the bottom of the gap up to WINDOW_SILL_H, with a
+  // couple of thin mullion bars across the remaining opening.
   const backLeft = brick(WALL_SEGMENT_STUDS, 1, WALL_UNITS, WALL_COLOR, { studs: false })
   backLeft.position.set(-WALL_SEGMENT_CENTER_X, 0, HOUSE_BACK_Z)
   group.add(backLeft)
@@ -180,6 +177,21 @@ function buildHouse() {
   const lintel = brick(3, 1, 1.5, WALL_COLOR, { studs: false })
   lintel.position.set(0, WALL_H - 1.5 * BRICK_H, HOUSE_BACK_Z)
   group.add(lintel)
+
+  const sillUnits = WINDOW_SILL_H / BRICK_H
+  const sill = brick(3, 1, sillUnits, WALL_COLOR, { studs: false })
+  sill.position.set(0, 0, HOUSE_BACK_Z)
+  group.add(sill)
+
+  const mullionMat = new THREE.MeshStandardMaterial({ color: 0x5a4632, flatShading: true })
+  const lintelBottomY = WALL_H - 1.5 * BRICK_H
+  const paneHeight = lintelBottomY - WINDOW_SILL_H
+  const mullionH = new THREE.Mesh(new THREE.BoxGeometry(OPENING_HALF_WIDTH * 2 + 0.06, 0.06, 0.1), mullionMat)
+  mullionH.position.set(0, WINDOW_SILL_H + paneHeight / 2, HOUSE_BACK_Z)
+  group.add(mullionH)
+  const mullionV = new THREE.Mesh(new THREE.BoxGeometry(0.06, paneHeight, 0.1), mullionMat)
+  mullionV.position.set(0, WINDOW_SILL_H + paneHeight / 2, HOUSE_BACK_Z)
+  group.add(mullionV)
 
   // Side walls
   const sideWallStuds = (HOUSE_DEPTH + 1.4) / STUD
@@ -209,8 +221,10 @@ function buildHouse() {
   ceiling.receiveShadow = true
   group.add(ceiling)
 
-  // Chunky pitched roof
-  const roof = slopeRoof(23, 34, 3.5, ROOF_COLOR)
+  // Chunky pitched roof, sized to overhang the (variable) footprint below
+  const roofWidthStuds = (HOUSE_WIDTH + 2) / STUD
+  const roofDepthStuds = (HOUSE_DEPTH + 4) / STUD
+  const roof = slopeRoof(roofWidthStuds, roofDepthStuds, 3.5, ROOF_COLOR)
   roof.position.set(0, WALL_H + 0.9, HOUSE_CENTER_Z)
   group.add(roof)
 
@@ -229,7 +243,7 @@ function buildHouse() {
   group.add(mattress)
 
   const sleepingChild = buildSleepingChild()
-  sleepingChild.position.set(BED_X, 0.46, BED_Z)
+  sleepingChild.position.set(BED_X, 0.56, BED_Z) // resting on the mattress's top surface
   group.add(sleepingChild)
 
   // A crate for a bit more yard detail
@@ -250,9 +264,9 @@ function buildHouse() {
 function buildYardFence() {
   const group = new THREE.Group()
   const FENCE_COLOR = 0x5a4632
-  const halfW = 6.5
+  const halfW = 7.2
   const zBack = -3.5
-  const zFront = 9.0
+  const zFront = 10.3
   const spacing = 1.1
   const gateHalfWidth = 1.0
 
