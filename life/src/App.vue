@@ -6,10 +6,11 @@
 </template>
 
 <script setup>
-import { onMounted, onBeforeUnmount, ref } from 'vue'
+import { onMounted, onBeforeUnmount, ref, watch } from 'vue'
+import * as THREE from 'three'
 import { Game } from './game/Game'
 import { buildWorld, elevationAt } from './game/environment'
-import { createDadFigure, createUncleFigure } from './game/characters'
+import { createDadFigure, createUncleFigure, createBoyFigure } from './game/characters'
 import { createPlayerController } from './game/player'
 import { createThirdPersonCamera } from './game/thirdPersonCamera'
 import { createCompanion } from './game/companion'
@@ -38,11 +39,16 @@ function onKeydown(e) {
   if (e.code === 'Space') {
     e.preventDefault()
     zoneDirector?.continuePrompt()
+  } else if (e.code === 'KeyE') {
+    zoneDirector?.interact()
+  } else if (e.code === 'Escape' && uiState.phase === 'playing') {
+    uiState.paused = !uiState.paused
   }
 }
 
 function onBegin() {
   ambience.start()
+  ambience.setVolume(uiState.volume)
   mobCrowd.activate()
   uiState.phase = 'playing'
 }
@@ -75,6 +81,13 @@ onMounted(() => {
   uncle.mount.position.set(1.2, elevationAt(1.4), 1.4)
   game.scene.add(uncle.mount)
 
+  // Set down at the hideout and walked the rest of the way, rather than
+  // carried, until dad picks him back up at the plank — see ZoneDirector's
+  // 'hiding' stage and tryPlacePlank() in zones.js. Hidden until then.
+  const boy = createBoyFigure()
+  boy.mount.visible = false
+  game.scene.add(boy.mount)
+
   mobCrowd = createMobCrowd(16)
   game.scene.add(mobCrowd.group)
 
@@ -86,15 +99,17 @@ onMounted(() => {
   })
   playerController = createPlayerController(dad.mount, thirdPersonCam.getYaw)
   const companion = createCompanion(uncle.mount, dad.mount)
+  const boyCompanion = createCompanion(boy.mount, dad.mount, new THREE.Vector3(-1.0, 0, 0.5))
 
   world.mobCrowd = mobCrowd
   world.dadFigure = dad
+  world.boyFigure = boy
 
   zoneDirector = new ZoneDirector(game, world, dad.mount)
   ambience = new Ambience()
 
   if (process.env.NODE_ENV !== 'production') {
-    window.__debug = { game, world, dad, uncle, mobCrowd, zoneDirector, uiState, playerController, thirdPersonCam }
+    window.__debug = { game, world, dad, uncle, boy, mobCrowd, zoneDirector, uiState, playerController, thirdPersonCam }
   }
 
   game.addUpdatable((dt) => {
@@ -109,6 +124,10 @@ onMounted(() => {
     uncle.setWalking(uncleMoving)
     uncle.update(dt)
 
+    const boyMoving = boyCompanion.update(dt)
+    boy.setWalking(boyMoving)
+    boy.update(dt)
+
     thirdPersonCam.update(dt)
 
     if (uiState.phase === 'playing') {
@@ -118,6 +137,23 @@ onMounted(() => {
     }
   })
   game.start()
+
+  watch(
+    () => uiState.paused,
+    (paused) => {
+      if (paused) {
+        game.stop()
+        ambience.pause()
+      } else {
+        game.start()
+        ambience.resume()
+      }
+    }
+  )
+  watch(
+    () => uiState.volume,
+    (volume) => ambience.setVolume(volume)
+  )
 
   window.addEventListener('resize', handleResize)
   window.addEventListener('keydown', onKeydown)

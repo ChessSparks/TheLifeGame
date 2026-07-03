@@ -26,8 +26,38 @@
       <button @click="$emit('restart')">Restart</button>
     </div>
 
+    <div v-if="uiState.phase === 'gameover'" class="card gameover-card">
+      <h2>{{ uiState.gameOverTitle }}</h2>
+      <p>{{ uiState.gameOverBody }}</p>
+      <button @click="$emit('restart')">Try Again</button>
+    </div>
+
+    <transition name="fade-text">
+      <p v-if="uiState.interactHint" class="interact-hint">{{ uiState.interactHint }}</p>
+    </transition>
+
+    <button
+      v-if="uiState.phase === 'playing' && !uiState.paused"
+      class="pause-button"
+      @click="uiState.paused = true"
+    >
+      II
+    </button>
+
+    <transition name="fade-text">
+      <div v-if="uiState.paused" class="card pause-card">
+        <h2>Paused</h2>
+        <label class="volume-row">
+          Volume
+          <input type="range" min="0" max="1" step="0.01" v-model.number="uiState.volume" />
+        </label>
+        <button @click="uiState.paused = false">Resume</button>
+        <button class="secondary" @click="$emit('restart')">Restart</button>
+      </div>
+    </transition>
+
     <p v-if="uiState.phase === 'playing'" class="look-hint" :class="{ hidden: !showHint }">
-      WASD to move · drag to look around
+      WASD to move · drag to look around · E to interact · Esc to pause
     </p>
   </div>
 </template>
@@ -157,6 +187,57 @@ watch(
 .card button:hover {
   background: #ece6d8;
   color: #0a0c10;
+}
+
+.gameover-card {
+  background: rgba(38, 4, 4, 0.85);
+}
+
+.interact-hint {
+  position: absolute;
+  bottom: 3%;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 1rem;
+  opacity: 0.85;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.9);
+  animation: pulse 1.8s ease-in-out infinite;
+}
+
+.pause-button {
+  position: absolute;
+  top: 4%;
+  right: 4%;
+  pointer-events: auto;
+  background: transparent;
+  border: 1px solid rgba(236, 230, 216, 0.4);
+  color: #ece6d8;
+  opacity: 0.55;
+  font-size: 0.75rem;
+  letter-spacing: 0.1em;
+  padding: 0.35rem 0.6rem;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.pause-button:hover {
+  opacity: 0.9;
+}
+
+.volume-row {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-top: 1.4rem;
+  font-size: 0.85rem;
+  opacity: 0.85;
+}
+
+.card button.secondary {
+  margin-top: 0.7rem;
+  opacity: 0.65;
+  font-size: 0.85rem;
 }
 
 .look-hint {

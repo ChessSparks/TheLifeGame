@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { TorchGroup, createEmberField, updateEmberField } from './effects'
 import { makeMoonTexture, makeGlowTexture } from './textures'
-import { brick, slopeRoof, baseplateTile, BRICK_H } from './lego'
+import { brick, slopeRoof, baseplateTile, BRICK_H, STUD } from './lego'
 
 // Ground elevation keyframes: [z, groundY]. Linear interpolation between them.
 const GROUND_KEYS = [
@@ -34,6 +34,38 @@ export function elevationAt(z) {
 // X), crossing the open field at this Z — a short driveway connects it to
 // the house's front gate.
 export const ROAD_Z = 11
+
+// Where the boy sleeps until the player walks over and picks him up — see
+// ZoneDirector.tryPickup() in zones.js.
+export const BED_X = -1.6
+export const BED_Z = 3.4
+
+// The stream crossing, reused for the morning return trip — see
+// ZoneDirector's 'return' stage in zones.js.
+export const STREAM_CENTER_X = 1.6
+export const STREAM_CENTER_Z = -12.4
+const STREAM_HALF_DEPTH = 2.6 // half of the water plane's un-flooded Z extent
+const FLOOD_SCALE_Z = 1.4 // how much wider the stream gets once flooded
+export const FLOOD_HALF_DEPTH = STREAM_HALF_DEPTH * FLOOD_SCALE_Z
+// The flooded water's true edges — used to gate the barrier, the "walk on
+// the plank or fall in" check, and the "crossed" subtitle.
+export const FLOOD_SOUTH_Z = STREAM_CENTER_Z - FLOOD_HALF_DEPTH // forest side
+export const FLOOD_NORTH_Z = STREAM_CENTER_Z + FLOOD_HALF_DEPTH // house side
+
+export const PLANK_WIDTH = 1.8
+const PLANK_THICKNESS = 0.22
+const PLANK_OVERHANG = 1 // extra length resting on each bank past the flood's true edge
+const PLANK_LENGTH = FLOOD_HALF_DEPTH * 2 + PLANK_OVERHANG * 2
+const PLANK_REST_X = STREAM_CENTER_X
+const PLANK_REST_Z = FLOOD_SOUTH_Z - 1.5 // safely on dry ground, short walk from the barrier
+const PLANK_PLACED_Y = 0.06
+export const PLANK_SURFACE_Y = PLANK_PLACED_Y + PLANK_THICKNESS / 2
+
+// Where the player needs to get to during the escape's 'hiding' beat — just
+// behind the rock in the forest (see buildForest()'s rock, below), out of
+// the sweeping torchlight's view. See ZoneDirector's 'intro' stage.
+export const HIDE_SPOT_X = 5.6
+export const HIDE_SPOT_Z = -30.3
 
 function zoneColor(z) {
   if (z > 9) return new THREE.Color(0x4a4438) // open field beyond the yard
@@ -83,13 +115,51 @@ const WALL_UNITS = 6 // brick-heights tall
 const WALL_H = WALL_UNITS * BRICK_H
 // House footprint, in world units. The back wall stays fixed at z = -1 (all
 // of the escape sequence's z-thresholds are calibrated relative to it) —
-// only the front (street-facing) side extends further out to make the
-// house bigger.
-const HOUSE_WIDTH = 6.0
+// only the front (street-facing) side extends further out and the walls
+// widen to make the house bigger.
+const HOUSE_HALF_WIDTH = 3.8
 const HOUSE_BACK_Z = -1
-const HOUSE_FRONT_Z = 5.8
-const HOUSE_DEPTH = 8.0
+const HOUSE_FRONT_Z = 6.8
+const HOUSE_WIDTH = HOUSE_HALF_WIDTH * 2
+const HOUSE_DEPTH = HOUSE_FRONT_Z - HOUSE_BACK_Z + 1.2
 const HOUSE_CENTER_Z = (HOUSE_BACK_Z + HOUSE_FRONT_Z) / 2
+// The window/door opening stays a fixed, human-sized gap regardless of how
+// wide the walls get — only the flanking wall segments stretch to reach it.
+const OPENING_HALF_WIDTH = 0.6
+const WALL_SEGMENT_STUDS = (HOUSE_HALF_WIDTH - OPENING_HALF_WIDTH) / STUD
+const WALL_SEGMENT_CENTER_X = (HOUSE_HALF_WIDTH + OPENING_HALF_WIDTH) / 2
+// Player can't push out past this z toward the front door — they escape
+// through the back window, not out the front (see ZoneDirector's
+// front-door barrier check in zones.js).
+export const FRONT_BARRIER_Z = HOUSE_FRONT_Z - 1.3
+
+// A small blanketed shape with a head peeking out — reads as a sleeping
+// child at a glance without needing the full minifigure rig lying down.
+function buildSleepingChild() {
+  const group = new THREE.Group()
+  const blanketMat = new THREE.MeshStandardMaterial({ color: 0x8a3a3a, flatShading: true })
+  const blanket = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.24, 1.35), blanketMat)
+  blanket.position.set(0, 0.12, 0.05)
+  blanket.castShadow = true
+  blanket.receiveShadow = true
+  group.add(blanket)
+
+  const headMat = new THREE.MeshStandardMaterial({ color: 0xf2c48d, flatShading: true })
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.17, 10, 8), headMat)
+  head.position.set(0, 0.16, -0.7)
+  head.castShadow = true
+  group.add(head)
+
+  const hairMat = new THREE.MeshStandardMaterial({ color: 0x4a3222, flatShading: true })
+  const hair = new THREE.Mesh(
+    new THREE.SphereGeometry(0.18, 10, 6, 0, Math.PI * 2, 0, Math.PI * 0.55),
+    hairMat
+  )
+  hair.position.set(0, 0.22, -0.7)
+  group.add(hair)
+
+  return group
+}
 
 function buildHouse() {
   const group = new THREE.Group()
@@ -101,31 +171,32 @@ function buildHouse() {
   group.add(floor)
 
   // Back wall (z = -1), split to leave a window/exit gap in the middle.
-  const backLeft = brick(6, 1, WALL_UNITS, WALL_COLOR, { studs: false })
-  backLeft.position.set(-1.8, 0, HOUSE_BACK_Z)
+  const backLeft = brick(WALL_SEGMENT_STUDS, 1, WALL_UNITS, WALL_COLOR, { studs: false })
+  backLeft.position.set(-WALL_SEGMENT_CENTER_X, 0, HOUSE_BACK_Z)
   group.add(backLeft)
-  const backRight = brick(6, 1, WALL_UNITS, WALL_COLOR, { studs: false })
-  backRight.position.set(1.8, 0, HOUSE_BACK_Z)
+  const backRight = brick(WALL_SEGMENT_STUDS, 1, WALL_UNITS, WALL_COLOR, { studs: false })
+  backRight.position.set(WALL_SEGMENT_CENTER_X, 0, HOUSE_BACK_Z)
   group.add(backRight)
   const lintel = brick(3, 1, 1.5, WALL_COLOR, { studs: false })
   lintel.position.set(0, WALL_H - 1.5 * BRICK_H, HOUSE_BACK_Z)
   group.add(lintel)
 
   // Side walls
-  const leftWall = brick(1, 20, WALL_UNITS, WALL_COLOR, { studs: false })
-  leftWall.position.set(-2.95, 0, HOUSE_CENTER_Z)
+  const sideWallStuds = (HOUSE_DEPTH + 1.4) / STUD
+  const leftWall = brick(1, sideWallStuds, WALL_UNITS, WALL_COLOR, { studs: false })
+  leftWall.position.set(-HOUSE_HALF_WIDTH, 0, HOUSE_CENTER_Z)
   group.add(leftWall)
-  const rightWall = brick(1, 20, WALL_UNITS, WALL_COLOR, { studs: false })
-  rightWall.position.set(2.95, 0, HOUSE_CENTER_Z)
+  const rightWall = brick(1, sideWallStuds, WALL_UNITS, WALL_COLOR, { studs: false })
+  rightWall.position.set(HOUSE_HALF_WIDTH, 0, HOUSE_CENTER_Z)
   group.add(rightWall)
 
   // Front wall, facing the street — split to leave a door opening in the
   // middle, mirroring the back-window split above.
-  const frontLeft = brick(6, 1, WALL_UNITS, WALL_COLOR, { studs: false })
-  frontLeft.position.set(-1.8, 0, HOUSE_FRONT_Z)
+  const frontLeft = brick(WALL_SEGMENT_STUDS, 1, WALL_UNITS, WALL_COLOR, { studs: false })
+  frontLeft.position.set(-WALL_SEGMENT_CENTER_X, 0, HOUSE_FRONT_Z)
   group.add(frontLeft)
-  const frontRight = brick(6, 1, WALL_UNITS, WALL_COLOR, { studs: false })
-  frontRight.position.set(1.8, 0, HOUSE_FRONT_Z)
+  const frontRight = brick(WALL_SEGMENT_STUDS, 1, WALL_UNITS, WALL_COLOR, { studs: false })
+  frontRight.position.set(WALL_SEGMENT_CENTER_X, 0, HOUSE_FRONT_Z)
   group.add(frontRight)
   const frontLintel = brick(3, 1, 1.5, WALL_COLOR, { studs: false })
   frontLintel.position.set(0, WALL_H - 1.5 * BRICK_H, HOUSE_FRONT_Z)
@@ -147,15 +218,19 @@ function buildHouse() {
   const bedMat = new THREE.MeshStandardMaterial({ color: 0x6b5a4a, flatShading: true })
   const mattressMat = new THREE.MeshStandardMaterial({ color: 0xcfc6b0, flatShading: true })
   const bedFrame = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.35, 2), bedMat)
-  bedFrame.position.set(-1.6, 0.2, 3.4)
+  bedFrame.position.set(BED_X, 0.2, BED_Z)
   bedFrame.castShadow = true
   bedFrame.receiveShadow = true
   group.add(bedFrame)
   const mattress = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.18, 1.9), mattressMat)
-  mattress.position.set(-1.6, 0.46, 3.4)
+  mattress.position.set(BED_X, 0.46, BED_Z)
   mattress.castShadow = true
   mattress.receiveShadow = true
   group.add(mattress)
+
+  const sleepingChild = buildSleepingChild()
+  sleepingChild.position.set(BED_X, 0.46, BED_Z)
+  group.add(sleepingChild)
 
   // A crate for a bit more yard detail
   const crate = brick(2, 2, 2, 0x8a5a2c)
@@ -167,7 +242,7 @@ function buildHouse() {
   bedroomLight.position.set(-0.6, 1.8, 2.6)
   group.add(bedroomLight)
 
-  return { group, bedroomLight }
+  return { group, bedroomLight, sleepingChild }
 }
 
 // A perimeter picket fence around the house and yard, with a gate-sized gap
@@ -279,10 +354,12 @@ function buildBarn(x, z) {
 function buildStream() {
   // Long in X (the river's length, so both banks run off past the visible
   // frame) and narrow in Z (the crossing width) — reads as a river rather
-  // than a contained pond.
+  // than a contained pond. Kept centered on its own group (rather than
+  // baking the world-space offset into the geometry) so floodStream() can
+  // scale it wider around its true center for the morning return trip.
+  const group = new THREE.Group()
   const geometry = new THREE.PlaneGeometry(30, 5.2, 56, 10)
   geometry.rotateX(-Math.PI / 2)
-  geometry.translate(1.6, -0.5, -12.4)
   const material = new THREE.MeshStandardMaterial({
     color: 0x0d2836,
     flatShading: true,
@@ -291,14 +368,18 @@ function buildStream() {
     transparent: true,
     opacity: 0.88,
   })
-  const water = new THREE.Mesh(geometry, material)
-  water.userData.basePositions = geometry.attributes.position.array.slice()
-  return water
+  const mesh = new THREE.Mesh(geometry, material)
+  mesh.userData.basePositions = geometry.attributes.position.array.slice()
+  group.add(mesh)
+  group.position.set(STREAM_CENTER_X, -0.5, STREAM_CENTER_Z)
+  group.userData.mesh = mesh
+  return group
 }
 
-function updateWater(water, elapsed) {
-  const pos = water.geometry.attributes.position
-  const base = water.userData.basePositions
+function updateWater(streamGroup, elapsed) {
+  const mesh = streamGroup.userData.mesh
+  const pos = mesh.geometry.attributes.position
+  const base = mesh.userData.basePositions
   for (let i = 0; i < pos.count; i++) {
     const ix = i * 3
     const x = base[ix]
@@ -309,6 +390,34 @@ function updateWater(water, elapsed) {
       base[ix + 1] + Math.sin(x * 0.5 - elapsed * 1.8) * 0.035 + Math.sin(z * 1.4 + elapsed * 0.7) * 0.015
   }
   pos.needsUpdate = true
+}
+
+// Widens and raises the stream around its own center once morning comes —
+// the ford that was walkable at night is a real crossing now, so the player
+// needs the plank (see buildPlank()/placePlank() below).
+function floodStream(streamGroup) {
+  streamGroup.scale.z = FLOOD_SCALE_Z
+  streamGroup.position.y += 0.3
+}
+
+// A plank the player must lay across the stream on the return trip. Sized to
+// fully cover the flooded water plus a bit of overhang onto each bank, so no
+// water is left exposed on either side once it's placed. Starts resting
+// crosswise on the forest-side bank (long axis along X); once placed it
+// pivots to span the water (long axis along Z).
+function buildPlank() {
+  const mat = new THREE.MeshStandardMaterial({ color: 0x6b4a2c, flatShading: true })
+  const plank = new THREE.Mesh(new THREE.BoxGeometry(PLANK_WIDTH, PLANK_THICKNESS, PLANK_LENGTH), mat)
+  plank.castShadow = true
+  plank.receiveShadow = true
+  plank.rotation.y = Math.PI / 2
+  plank.position.set(PLANK_REST_X, elevationAt(PLANK_REST_Z) + PLANK_THICKNESS / 2, PLANK_REST_Z)
+  return plank
+}
+
+function placePlank(plank) {
+  plank.rotation.y = 0
+  plank.position.set(STREAM_CENTER_X, PLANK_PLACED_Y, STREAM_CENTER_Z)
 }
 
 function distanceToPath(x, z) {
@@ -397,6 +506,21 @@ function buildForest() {
   rock.castShadow = true
   rock.receiveShadow = true
   group.add(rock)
+
+  // A soft patch of moonlight breaking through the canopy right where the
+  // player needs to get to behind the rock — see HIDE_SPOT_X/Z above and
+  // ZoneDirector's 'intro' stage in zones.js.
+  const hideGlowMat = new THREE.MeshBasicMaterial({
+    map: makeGlowTexture('rgba(210,225,255,0.6)', 'rgba(210,225,255,0)'),
+    transparent: true,
+    depthWrite: false,
+    fog: false,
+    blending: THREE.AdditiveBlending,
+  })
+  const hideGlow = new THREE.Mesh(new THREE.PlaneGeometry(3.6, 3.6), hideGlowMat)
+  hideGlow.rotation.x = -Math.PI / 2
+  hideGlow.position.set(HIDE_SPOT_X, elevationAt(HIDE_SPOT_Z) + 0.03, HIDE_SPOT_Z)
+  group.add(hideGlow)
 
   // Grass blades scattered across the forest floor, same bucket-instancing
   // approach as the trunks/canopies above.
@@ -574,7 +698,7 @@ export function buildWorld(scene) {
   const road = buildRoad()
   scene.add(road)
 
-  const { group: houseGroup, bedroomLight } = buildHouse()
+  const { group: houseGroup, bedroomLight, sleepingChild } = buildHouse()
   scene.add(houseGroup)
 
   // Decorative only (not a camera-collision obstacle) — added directly to
@@ -590,6 +714,9 @@ export function buildWorld(scene) {
   const water = buildStream()
   scene.add(water)
 
+  const plank = buildPlank()
+  scene.add(plank)
+
   const forest = buildForest()
   scene.add(forest)
 
@@ -599,7 +726,7 @@ export function buildWorld(scene) {
 
   // Mob presence near the front of the house — suggested only through light, never depicted.
   const torchGroupHouse = new TorchGroup(10, 4)
-  torchGroupHouse.group.position.set(-1, 0, 6.5)
+  torchGroupHouse.group.position.set(-1, 0, HOUSE_FRONT_Z + 0.7)
   scene.add(torchGroupHouse.group)
 
   // A second torch line that sweeps past below the hideout in the final beats.
@@ -623,6 +750,12 @@ export function buildWorld(scene) {
     water,
     moon,
     houseGroup,
+    sleepingChild,
+    bedPosition: new THREE.Vector3(BED_X, 0, BED_Z),
+    plank,
+    plankRestPosition: new THREE.Vector3(PLANK_REST_X, 0, PLANK_REST_Z),
+    floodStream: () => floodStream(water),
+    placePlank: () => placePlank(plank),
     torchGroupHouse,
     torchGroupForest,
     update,

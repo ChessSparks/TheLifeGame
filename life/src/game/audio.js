@@ -5,6 +5,7 @@ export class Ambience {
     this.ctx = null
     this.tension = 0
     this.heartbeatTimer = 0
+    this.volume = 0.8
   }
 
   start() {
@@ -12,6 +13,10 @@ export class Ambience {
     const AudioCtx = window.AudioContext || window.webkitAudioContext
     if (!AudioCtx) return
     this.ctx = new AudioCtx()
+
+    this.masterGain = this.ctx.createGain()
+    this.masterGain.gain.value = this.volume
+    this.masterGain.connect(this.ctx.destination)
 
     const noiseBuffer = this.ctx.createBuffer(1, this.ctx.sampleRate * 2, this.ctx.sampleRate)
     const data = noiseBuffer.getChannelData(0)
@@ -28,8 +33,21 @@ export class Ambience {
     this.windGain = this.ctx.createGain()
     this.windGain.gain.value = 0.05
 
-    this.noise.connect(this.windFilter).connect(this.windGain).connect(this.ctx.destination)
+    this.noise.connect(this.windFilter).connect(this.windGain).connect(this.masterGain)
     this.noise.start()
+  }
+
+  setVolume(value) {
+    this.volume = value
+    if (this.masterGain) this.masterGain.gain.value = value
+  }
+
+  pause() {
+    this.ctx?.suspend()
+  }
+
+  resume() {
+    this.ctx?.resume()
   }
 
   setTension(value) {
@@ -61,7 +79,7 @@ export class Ambience {
       gain.gain.setValueAtTime(0, now + offset)
       gain.gain.linearRampToValueAtTime(0.12 * this.tension, now + offset + 0.02)
       gain.gain.linearRampToValueAtTime(0, now + offset + 0.18)
-      osc.connect(gain).connect(this.ctx.destination)
+      osc.connect(gain).connect(this.masterGain)
       osc.start(now + offset)
       osc.stop(now + offset + 0.2)
     }

@@ -71,3 +71,11 @@ export function createDadFigure() {
 export function createUncleFigure() {
   return wrapFigure({ torso: 0x2f6bad, legs: 0x33322c, head: 0xf2c48d, hair: 0x1c1c1c })
 }
+
+// Same colors/scale as the child molded into dad's carrying pose (see
+// buildMinifigure's `carrying` option in lego.js) — used as a standalone,
+// walking figure for the stretch between being set down at the hideout and
+// picked back up at the plank. See ZoneDirector's 'hiding' stage in zones.js.
+export function createBoyFigure() {
+  return wrapFigure({ torso: 0xd4453a, legs: 0x2f3a5f, head: 0xf2c48d, hair: 0x4a3222 }, { scale: 0.62 })
+}

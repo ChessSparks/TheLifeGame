@@ -50,11 +50,11 @@ export function createMobCrowd(count = 16, options = {}) {
   const spawnZRange = options.spawnZRange ?? [ROAD_Z - 1.5, ROAD_Z + 1.5]
   // The driveway junction where the road meets the path to the house.
   const roadJunction = options.roadJunction ?? { x: 0, z: ROAD_Z }
-  // Yard sits between the (bigger) house's front door at z~5.8 and the
-  // fence's street-facing gate at z=9.
-  const gatherZRange = options.gatherZRange ?? [6.5, 8.8]
+  // Yard sits between the house's front door at z~6.8 and the fence's
+  // street-facing gate at z=9.
+  const gatherZRange = options.gatherZRange ?? [7.6, 8.8]
   const gatherXRange = options.gatherXRange ?? [-3.5, 1.5]
-  const doorZ = options.doorZ ?? 6.3
+  const doorZ = options.doorZ ?? 7.3
   const doorXRange = options.doorXRange ?? [-0.5, 0.5]
   const doorFraction = options.doorFraction ?? 0.25
   const speedRange = options.speedRange ?? [1.6, 2.4]
@@ -175,5 +175,13 @@ export function createMobCrowd(count = 16, options = {}) {
     return members.every((m) => m.state === 'hidden')
   }
 
-  return { group, update, activate, arrivedRatio, beginRetreat, isDone }
+  // True if any still-visible member is within `radius` of `position` —
+  // used to catch the player if they wander into the crowd.
+  function checkCollision(position, radius) {
+    return members.some(
+      (m) => m.state !== 'hidden' && m.figure.mount.position.distanceTo(position) < radius
+    )
+  }
+
+  return { group, update, activate, arrivedRatio, beginRetreat, isDone, checkCollision }
 }
