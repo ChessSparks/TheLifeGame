@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { uiState, showSubtitle, showPrompt, hidePrompt, showEnd, showGameOver } from './uiState'
+import { uiState, showSubtitle, showEnd, showGameOver } from './uiState'
 import {
   FLOOD_SOUTH_Z,
   FLOOD_NORTH_Z,
@@ -9,6 +9,9 @@ import {
   HIDE_SPOT_X,
   HIDE_SPOT_Z,
   FRONT_BARRIER_Z,
+  WINDOW_INSIDE_POS,
+  WINDOW_OUTSIDE_POS,
+  elevationAt,
 } from './environment'
 
 // How close the player must be to the bed to pick the boy up.
@@ -29,14 +32,26 @@ const PLANK_INTERACT_RADIUS = 1.6
 const PLANK_HALF_WIDTH = PLANK_WIDTH / 2
 // Player z at which the return trip counts as "back inside the house".
 const HOUSE_ARRIVAL_Z = 1.2
+// The uncle's usual side-by-side follow spot, and the single-file spot he
+// tucks into for the narrow plank crossing (see the 'return' stage below) —
+// side-by-side would put him off the plank's width and into the water.
+const UNCLE_SIDE_OFFSET = new THREE.Vector3(1.4, 0, 0.6)
+const UNCLE_INLINE_OFFSET = new THREE.Vector3(0, 0, -1.1)
 // How close to the rock counts as "hidden behind it".
 const HIDE_RADIUS = 2.2
 const HIDE_SPOT = new THREE.Vector3(HIDE_SPOT_X, 0, HIDE_SPOT_Z)
+// Where dad (and the uncle) get physically held back until the window
+// climb happens — a bit short of the wall itself. This is checked
+// unconditionally from the start of the game (not gated behind any stage),
+// otherwise it can be bypassed by reaching the window before the mob
+// sequence even plays out. Once in 'intro' (mob sequence already done),
+// reaching this line auto-triggers the climb — no keypress needed.
+const WINDOW_BARRIER_Z = WINDOW_INSIDE_POS.z - 0.6
+const WINDOW_CLIMB_DURATION = 1.1
 
-// Ground-plane-only distance — proximity checks (bed, plank, hide spot) care
-// about where the player is standing on the map, not how it compares to a
-// marker's arbitrary y value against wildly varying terrain height (the
-// forest floor near the hideout climbs several units above sea level).
+// Ground-plane-only distance — proximity checks (bed, plank) care about
+// where the player is standing on the map, not how it compares to a
+// marker's arbitrary y value against wildly varying terrain height.
 function horizontalDistance(a, b) {
   return Math.hypot(a.x - b.x, a.z - b.z)
 }
@@ -51,7 +66,7 @@ export class ZoneDirector {
     this.playerMount = playerMount
     this.elapsed = 0
     this.fired = new Set()
-    // approach | gameover | caught | lull | attack | retreat | intro | hiding | waitPrompt | dawn | return | ended
+    // approach | gameover | caught | lull | attack | intro | hiding | waitPrompt | dawn | return | drowned | ended
     this.stage = 'approach'
     this.stageElapsed = 0
     // Guards the intro-onward triggers below, which key off this.stageElapsed
@@ -64,6 +79,14 @@ export class ZoneDirector {
     this.pickupDeadline = null
     this.plankPlaced = false
     this.crossedShown = false
+    this.wentThroughWindow = false
+    // null when no scripted climb is playing; 0..1 progress while it is.
+    this.climbAnimT = null
+    // Same, for the uncle's climb — kicked off right as dad's finishes (see
+    // the climb-completion code below), so he follows through the window
+    // the same way instead of just walking around to it.
+    this.uncleClimbAnimT = null
+    this.uncleClimbStart = null
     uiState.fadeOpacity = 1
   }
 
@@ -73,21 +96,16 @@ export class ZoneDirector {
     fn()
   }
 
-  continuePrompt() {
-    if (this.stage === 'waitPrompt') {
-      hidePrompt()
-      this.stage = 'dawn'
-      this.stageElapsed = 0
-    } else if (this.stage === 'attack') {
-      hidePrompt()
-      this.world.mobCrowd.beginRetreat()
-      this.stage = 'retreat'
-      this.stageElapsed = 0
-    }
-  }
+  // No stage waits on a click anymore (see the 'attack' and 'waitPrompt'
+  // stages in update(), which now both auto-advance) — kept as a harmless
+  // no-op since App.vue/GameUI.vue still send Space-presses and prompt
+  // clicks here.
+  continuePrompt() {}
 
   // Single 'E'-keypress entry point (see App.vue) — dispatches to whichever
-  // interaction is relevant for the current stage.
+  // interaction is relevant for the current stage. Climbing through the
+  // window is no longer one of these — it now happens automatically once
+  // the player reaches it (see the window-barrier block in update()).
   interact() {
     if (this.stage === 'approach') this.tryPickup()
     else if (this.stage === 'return') this.tryPlacePlank()
@@ -144,11 +162,81 @@ export class ZoneDirector {
     }
 
     // They escape through the back window, not out the front door — hold
-    // the player back from the door until they've actually gone through
-    // the window (once('through-window') below marks that permanently).
-    if (!this.fired.has('through-window') && z > FRONT_BARRIER_Z) {
+    // the player back from the door until they've actually climbed through
+    // the window (this.wentThroughWindow, set below).
+    if (!this.wentThroughWindow && z > FRONT_BARRIER_Z) {
       this.playerMount.position.z = FRONT_BARRIER_Z
       z = FRONT_BARRIER_Z
+    }
+
+    // The window barrier (and the scripted climb that lifts it) is checked
+    // unconditionally, from the very start of the game — not gated behind
+    // this.introStarted — otherwise it can be walked straight past before
+    // the mob-attack sequence even plays out. No keypress needed: reaching
+    // the window during 'intro' (i.e. once the mob-attack beat has already
+    // played out) climbs through automatically.
+    if (!this.wentThroughWindow) {
+      if (this.climbAnimT !== null) {
+        // Scripted hop through the window — drives dad's position directly
+        // while input is disabled, rather than letting the player just walk
+        // through.
+        this.climbAnimT += dt / WINDOW_CLIMB_DURATION
+        const t = Math.min(this.climbAnimT, 1)
+        const eased = t * t * (3 - 2 * t)
+        this.playerMount.position.lerpVectors(WINDOW_INSIDE_POS, WINDOW_OUTSIDE_POS, eased)
+        this.playerMount.position.y = elevationAt(this.playerMount.position.z) + Math.sin(t * Math.PI) * 0.5
+        this.playerMount.rotation.x = -Math.sin(t * Math.PI) * 0.4
+        z = this.playerMount.position.z
+        if (t >= 1) {
+          this.climbAnimT = null
+          this.playerMount.rotation.x = 0
+          this.wentThroughWindow = true
+          this.world.playerController.setEnabled(true)
+          showSubtitle('Through the back window. Run.', 4500)
+          // However fast they got here, the escape narrative (voices,
+          // stream, hill, etc. — all gated on introStarted) picks up from
+          // here, even if lull/attack hadn't finished playing out.
+          this.stage = 'intro'
+          this.stageElapsed = 0
+          this.introStarted = true
+          // The uncle follows the same way, right behind — see the
+          // uncleClimbAnimT block below, rather than just walking around.
+          this.uncleClimbAnimT = 0
+          this.uncleClimbStart = this.world.uncleMount.position.clone()
+        }
+      } else if (z < WINDOW_BARRIER_Z) {
+        // Once the boy's actually in hand, nothing holds them back from
+        // bolting for the window immediately — they don't have to wait out
+        // the lull/attack beats first.
+        if (this.childPickedUp && !TERMINAL_STAGES.has(this.stage)) {
+          this.climbAnimT = 0
+          this.world.playerController.setEnabled(false)
+        } else {
+          // Don't have the boy yet — held back at the sill.
+          this.playerMount.position.z = WINDOW_BARRIER_Z
+          z = WINDOW_BARRIER_Z
+        }
+      }
+      if (this.world.uncleMount.position.z < WINDOW_BARRIER_Z) {
+        this.world.uncleMount.position.z = WINDOW_BARRIER_Z
+      }
+    }
+
+    // The uncle's own climb-through hop, kicked off right as dad's finishes
+    // (see this.uncleClimbAnimT above) — runs independently of wentThroughWindow
+    // since it continues after that's already true.
+    if (this.uncleClimbAnimT !== null) {
+      this.uncleClimbAnimT += dt / WINDOW_CLIMB_DURATION
+      const ut = Math.min(this.uncleClimbAnimT, 1)
+      const ueased = ut * ut * (3 - 2 * ut)
+      const uncleMount = this.world.uncleMount
+      uncleMount.position.lerpVectors(this.uncleClimbStart, WINDOW_OUTSIDE_POS, ueased)
+      uncleMount.position.y = elevationAt(uncleMount.position.z) + Math.sin(ut * Math.PI) * 0.5
+      uncleMount.rotation.x = -Math.sin(ut * Math.PI) * 0.4
+      if (ut >= 1) {
+        this.uncleClimbAnimT = null
+        uncleMount.rotation.x = 0
+      }
     }
 
     if (this.stage === 'approach') {
@@ -215,10 +303,12 @@ export class ZoneDirector {
       }
     } else if (this.stage === 'attack') {
       this.world.torchGroupHouse.intensity = Math.min(1, this.world.torchGroupHouse.intensity + dt * 0.5)
-      if (this.stageElapsed > 2) showPrompt('Hold on — click when ready')
-    } else if (this.stage === 'retreat') {
-      this.world.torchGroupHouse.intensity = Math.max(0.15, this.world.torchGroupHouse.intensity - dt * 0.12)
-      if (this.world.mobCrowd.isDone()) {
+      if (this.stageElapsed > 4) {
+        // No click needed — after a beat of pounding at the door, they
+        // move on their own. They don't retreat once the family gets away
+        // — they stay gathered at the house until morning (see the
+        // 'waitPrompt' stage below).
+        this.world.torchGroupHouse.intensity = 0.5
         this.stage = 'intro'
         this.stageElapsed = 0
         this.introStarted = true
@@ -230,16 +320,7 @@ export class ZoneDirector {
       this.once('voices', () => {
         if (this.stageElapsed > 5) showSubtitle('Voices outside. Then more of them.', 5000)
       })
-      if (this.fired.has('voices')) {
-        this.world.torchGroupHouse.intensity = Math.min(0.55, (this.stageElapsed - 5) * 0.15)
-      }
 
-      if (z < -1.6) {
-        this.once('through-window', () => {
-          showSubtitle('Through the back window. Run.', 4500)
-          this.world.torchGroupHouse.intensity = 0.8
-        })
-      }
       if (z < -9.4) {
         this.once('stream', () => showSubtitle('The river. Careful steps.', 4000))
       }
@@ -251,13 +332,10 @@ export class ZoneDirector {
           showSubtitle('Uphill. Into the trees.', 4000)
         })
       }
-      if (this.fired.has('hill') && this.stage === 'intro') {
-        this.world.torchGroupHouse.intensity = Math.max(0.15, this.world.torchGroupHouse.intensity - dt * 0.05)
-      }
 
       if (this.stage === 'intro') {
-        // Reaching the hideout isn't just about z anymore — the player has
-        // to actually walk behind the rock, out of the torchlight's sweep.
+        // Reaching the hideout isn't just about z — the player has to
+        // actually walk behind the rock, out of the torchlight's sweep.
         const distToHide = horizontalDistance(this.playerMount.position, HIDE_SPOT)
         if (z < -25) {
           uiState.interactHint = distToHide < HIDE_RADIUS ? '' : 'Get behind the rock'
@@ -277,18 +355,31 @@ export class ZoneDirector {
     }
 
     if (this.stage === 'hiding') {
+      // torchGroupHouse deliberately isn't touched here — the mob is still
+      // camped at the house all through the night (see continuePrompt()),
+      // so its glow stays steady until they're finally sent off at dawn.
       const t = Math.min(this.stageElapsed / 6, 1)
       this.world.torchGroupForest.intensity = Math.sin(t * Math.PI) * 0.9
-      this.world.torchGroupHouse.intensity *= 0.98
       if (this.stageElapsed > 6.5) {
         this.stage = 'waitPrompt'
         this.stageElapsed = 0
       }
     } else if (this.stage === 'waitPrompt') {
+      // No click needed — once behind the rock, they just wait it out and
+      // morning comes on its own.
       this.world.torchGroupForest.intensity *= 0.97
-      if (this.stageElapsed > 1.5) showPrompt('Hold still — click when ready')
+      if (this.stageElapsed > 4) {
+        // The mob has been camped outside all night — only morning
+        // actually sends them away.
+        this.world.mobCrowd.beginRetreat()
+        this.stage = 'dawn'
+        this.stageElapsed = 0
+      }
     } else if (this.stage === 'dawn') {
       const t = Math.min(this.stageElapsed / 6, 1)
+      // The mob's retreat (see continuePrompt()) plays out over roughly
+      // this same span — fade their glow out in step with it.
+      this.world.torchGroupHouse.intensity = 0.5 * (1 - t)
       if (t < 0.3) {
         uiState.fadeOpacity = t / 0.3
       } else if (t < 0.5) {
@@ -296,11 +387,17 @@ export class ZoneDirector {
       } else {
         const dt2 = (t - 0.5) / 0.5
         uiState.fadeOpacity = 1 - dt2
-        this.world.hemiLight.intensity = 2.6 + dt2 * 1.4
-        this.world.dirLight.intensity = 1.4 + dt2 * 1.0
-        this.world.hemiLight.color.lerp(new THREE.Color(0xbfd6ff), dt2 * 0.6)
-        this.game.scene.fog.color.lerp(new THREE.Color(0x9fb6cc), dt2 * 0.6)
-        this.game.scene.background.lerp(new THREE.Color(0x9fb6cc), dt2 * 0.6)
+        // Kept modest — much higher and the ground's vertex colors wash
+        // out toward gray/white under ACES tone mapping instead of reading
+        // as a green-and-brown morning landscape. Same for the fog/
+        // background target below — a pale blue reads as an overexposed
+        // haze against the forest floor, so it leans more sage than sky.
+        this.world.hemiLight.intensity = 2.6 + dt2 * 0.3
+        this.world.dirLight.intensity = 1.4 + dt2 * 0.2
+        this.world.hemiLight.color.lerp(new THREE.Color(0xbfd6ff), dt2 * 0.4)
+        this.game.scene.fog.color.lerp(new THREE.Color(0x4a5c3e), dt2 * 0.45)
+        this.game.scene.background.lerp(new THREE.Color(0x4a5c3e), dt2 * 0.45)
+        this.game.scene.fog.density = 0.035 - dt2 * 0.015
         this.world.moon.setOpacity(1 - dt2)
       }
       if (t >= 1) {
@@ -314,6 +411,11 @@ export class ZoneDirector {
         showSubtitle('The stream is running higher this morning.', 4000)
       })
 
+      // The plank is too narrow to walk side-by-side — tuck the uncle in
+      // behind dad, single-file, for the crossing itself.
+      const inFloodZone = z > FLOOD_SOUTH_Z && z < FLOOD_NORTH_Z
+      this.world.uncleCompanion.setOffset(inFloodZone ? UNCLE_INLINE_OFFSET : UNCLE_SIDE_OFFSET)
+
       if (!this.plankPlaced) {
         const dist = horizontalDistance(this.playerMount.position, this.world.plankRestPosition)
         uiState.interactHint = dist < PLANK_INTERACT_RADIUS ? 'Press E to lay the plank across' : ''
@@ -323,7 +425,6 @@ export class ZoneDirector {
         }
       } else {
         uiState.interactHint = ''
-        const inFloodZone = z > FLOOD_SOUTH_Z && z < FLOOD_NORTH_Z
         if (inFloodZone) {
           const onPlank = Math.abs(this.playerMount.position.x - STREAM_CENTER_X) < PLANK_HALF_WIDTH
           if (onPlank) {
@@ -333,6 +434,14 @@ export class ZoneDirector {
             this.stage = 'drowned'
             this.stageElapsed = 0
           }
+        }
+        // The uncle gets the same solid footing on the plank while crossing
+        // beside/behind dad — otherwise he'd visibly sink into the flooded
+        // streambed instead of standing on the surface.
+        const uncleMount = this.world.uncleMount
+        const uncleInFloodZone = uncleMount.position.z > FLOOD_SOUTH_Z && uncleMount.position.z < FLOOD_NORTH_Z
+        if (uncleInFloodZone && Math.abs(uncleMount.position.x - STREAM_CENTER_X) < PLANK_HALF_WIDTH) {
+          uncleMount.position.y = PLANK_SURFACE_Y
         }
         if (!this.crossedShown && z > FLOOD_NORTH_Z) {
           this.crossedShown = true

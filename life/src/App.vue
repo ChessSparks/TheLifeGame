@@ -104,6 +104,9 @@ onMounted(() => {
   world.mobCrowd = mobCrowd
   world.dadFigure = dad
   world.boyFigure = boy
+  world.uncleCompanion = companion
+  world.uncleMount = uncle.mount
+  world.playerController = playerController
 
   zoneDirector = new ZoneDirector(game, world, dad.mount)
   ambience = new Ambience()
