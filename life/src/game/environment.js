@@ -305,6 +305,9 @@ function buildDecorativeWindow(width, height, depth) {
       o.receiveShadow = true
     }
   })
+  // Exposed so damageHouse() (see buildWorld()) can shatter this pane once
+  // the mob has been at the house.
+  group.userData.glassMesh = glass
   return group
 }
 
@@ -351,11 +354,14 @@ function buildSideWallWithWindows(x, wallCenterZ, wallLengthStuds, windowZs, win
     group.add(seg)
   }
 
+  const glassMeshes = []
   for (const wz of sortedWindows) {
     const win = buildDecorativeWindow(windowWidth, windowH, 0.44)
     win.position.set(x, sillH + windowH / 2, wz)
     group.add(win)
+    glassMeshes.push(win.userData.glassMesh)
   }
+  group.userData.glassMeshes = glassMeshes
 
   return group
 }
@@ -393,6 +399,9 @@ function buildDoor(width, height) {
       o.receiveShadow = true
     }
   })
+  // Exposed so damageHouse() can shatter the door's own pane too.
+  group.userData.glassMesh = glass
+  group.userData.doorMat = doorMat
   return group
 }
 
@@ -464,9 +473,14 @@ function buildHouse() {
   frontLintel.position.set(0, WALL_H - 1.5 * BRICK_H, HOUSE_FRONT_Z)
   group.add(frontLintel)
 
+  // Hinged on its own left edge (rather than the door's own center) so
+  // damageHouse() can swing it open like it's hanging off a broken hinge.
   const door = buildDoor(DOOR_HALF_WIDTH * 2 - 0.06, WALL_H - 1.5 * BRICK_H - 0.05)
-  door.position.set(0, 0, HOUSE_FRONT_Z - 0.17)
-  group.add(door)
+  door.position.x = DOOR_HALF_WIDTH - 0.03
+  const doorPivot = new THREE.Group()
+  doorPivot.add(door)
+  doorPivot.position.set(-DOOR_HALF_WIDTH + 0.03, 0, HOUSE_FRONT_Z - 0.17)
+  group.add(doorPivot)
 
   // Ceiling
   const ceiling = new THREE.Mesh(new THREE.BoxGeometry(HOUSE_WIDTH, 0.16, HOUSE_DEPTH), floorMat)
@@ -606,7 +620,11 @@ function buildHouse() {
   frontRoomLight.position.set(TABLE_X, 1.8, TABLE_Z)
   group.add(frontRoomLight)
 
-  return { group, bedroomLight, sleepingChild }
+  // Exposed so damageHouse() (see buildWorld()) can wreck the door/windows
+  // once the family gets back home the morning after the attack.
+  const windowGlassMeshes = [...leftWall.userData.glassMeshes, ...rightWall.userData.glassMeshes, door.userData.glassMesh]
+
+  return { group, bedroomLight, sleepingChild, doorPivot, doorMat: door.userData.doorMat, windowGlassMeshes }
 }
 
 // A perimeter picket fence around the house and yard, with a gate-sized gap
@@ -785,6 +803,19 @@ function buildVillageHouse(x, z, rotY, wallColor, roofColor) {
   return group
 }
 
+// Shared between buildVillage() (which places the houses) and
+// buildVillageGreenery() (which scatters trees/bushes/grass around them,
+// staying clear of each house's own fenced yard).
+const VILLAGE_HOUSES = [
+  [-19, ROAD_Z + 9, 0.2],
+  [-10, ROAD_Z + 15, -0.15],
+  [11, ROAD_Z + 10, 0.3],
+  [21, ROAD_Z + 16, -0.25],
+  [-27, ROAD_Z + 20, 0.1],
+  [30, ROAD_Z + 22, -0.1],
+  [2, ROAD_Z + 24, 0.05],
+]
+
 // A small village lining the road — pure background scenery giving the
 // "village in eastern Croatia" setting some visual weight beyond a single
 // isolated house. Set back from the road itself and placed past the front
@@ -798,19 +829,129 @@ function buildVillage() {
     [0xa89478, 0x3a2c28],
     [0xbfae90, 0x6b4a36],
   ]
-  const houses = [
-    [-19, ROAD_Z + 9, 0.2],
-    [-10, ROAD_Z + 15, -0.15],
-    [11, ROAD_Z + 10, 0.3],
-    [21, ROAD_Z + 16, -0.25],
-    [-27, ROAD_Z + 20, 0.1],
-    [30, ROAD_Z + 22, -0.1],
-    [2, ROAD_Z + 24, 0.05],
-  ]
-  houses.forEach(([x, z, rotY], i) => {
+  VILLAGE_HOUSES.forEach(([x, z, rotY], i) => {
     const [wallColor, roofColor] = palette[i % palette.length]
     group.add(buildVillageHouse(x, z, rotY, wallColor, roofColor))
   })
+  return group
+}
+
+// Trees, bushes, and grass scattered around the village so it doesn't read
+// as houses dropped on bare field — same instancing approach as
+// buildForest(), just over the village's z-range and kept clear of each
+// house's own fenced yard.
+function buildVillageGreenery() {
+  const group = new THREE.Group()
+  const clearOfHouses = (x, z) => VILLAGE_HOUSES.every(([hx, hz]) => Math.hypot(x - hx, z - hz) > 5.5)
+  const dummy = new THREE.Object3D()
+
+  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x3a2c20, flatShading: true })
+  const canopyMats = [
+    new THREE.MeshStandardMaterial({ color: 0x2f4a24, flatShading: true }),
+    new THREE.MeshStandardMaterial({ color: 0x385228, flatShading: true }),
+    new THREE.MeshStandardMaterial({ color: 0x2a4020, flatShading: true }),
+  ]
+  const treeSpecs = []
+  const treeCount = 130
+  for (let i = 0; i < treeCount; i++) {
+    const x = (Math.random() - 0.5) * 70
+    const z = ROAD_Z + 4 + Math.random() * 38
+    if (!clearOfHouses(x, z)) continue
+    treeSpecs.push({
+      x,
+      z,
+      groundY: elevationAt(z),
+      trunkHeight: 1.6 + Math.random() * 1.6,
+      canopyHeight: 1.6 + Math.random() * 1.4,
+      canopyRadius: 0.7 + Math.random() * 0.5,
+      canopyRotY: Math.random() * Math.PI,
+      matIndex: i % canopyMats.length,
+    })
+  }
+  const trunkGeo = new THREE.CylinderGeometry(0.08, 0.14, 1, 5)
+  const trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, treeSpecs.length)
+  trunkMesh.castShadow = true
+  trunkMesh.receiveShadow = true
+  const canopyGeo = new THREE.ConeGeometry(1, 1, 6)
+  const canopyBuckets = canopyMats.map((mat, gi) => ({
+    mesh: new THREE.InstancedMesh(canopyGeo, mat, treeSpecs.filter((s) => s.matIndex === gi).length),
+    cursor: 0,
+  }))
+  canopyBuckets.forEach(({ mesh }) => {
+    mesh.castShadow = true
+    mesh.receiveShadow = true
+  })
+  treeSpecs.forEach((s, idx) => {
+    dummy.position.set(s.x, s.groundY + s.trunkHeight / 2, s.z)
+    dummy.rotation.set(0, 0, 0)
+    dummy.scale.set(1, s.trunkHeight, 1)
+    dummy.updateMatrix()
+    trunkMesh.setMatrixAt(idx, dummy.matrix)
+    const bucket = canopyBuckets[s.matIndex]
+    dummy.position.set(s.x, s.groundY + s.trunkHeight + s.canopyHeight / 2 - 0.2, s.z)
+    dummy.rotation.set(0, s.canopyRotY, 0)
+    dummy.scale.set(s.canopyRadius, s.canopyHeight, s.canopyRadius)
+    dummy.updateMatrix()
+    bucket.mesh.setMatrixAt(bucket.cursor++, dummy.matrix)
+  })
+  trunkMesh.instanceMatrix.needsUpdate = true
+  group.add(trunkMesh)
+  canopyBuckets.forEach(({ mesh }) => {
+    mesh.instanceMatrix.needsUpdate = true
+    group.add(mesh)
+  })
+
+  const bushCount = 20
+  for (let i = 0; i < bushCount; i++) {
+    const x = (Math.random() - 0.5) * 70
+    const z = ROAD_Z + 4 + Math.random() * 38
+    if (!clearOfHouses(x, z)) continue
+    const bush = buildBerryBush(0.5 + Math.random() * 0.4)
+    bush.position.set(x, elevationAt(z), z)
+    bush.rotation.y = Math.random() * Math.PI * 2
+    group.add(bush)
+  }
+
+  const bladeGeo = new THREE.CylinderGeometry(0.02, 0.06, 1, 3)
+  const bladeMats = [
+    new THREE.MeshStandardMaterial({ color: 0x4a7a3a, flatShading: true }),
+    new THREE.MeshStandardMaterial({ color: 0x3f6a30, flatShading: true }),
+  ]
+  const bladeSpecs = []
+  const bladeCount = 1600
+  for (let i = 0; i < bladeCount; i++) {
+    const x = (Math.random() - 0.5) * 74
+    const z = ROAD_Z + 3 + Math.random() * 40
+    if (!clearOfHouses(x, z)) continue
+    bladeSpecs.push({
+      x,
+      z,
+      groundY: elevationAt(z),
+      height: 0.15 + Math.random() * 0.2,
+      rotY: Math.random() * Math.PI,
+      matIndex: i % bladeMats.length,
+    })
+  }
+  const bladeBuckets = bladeMats.map((mat, gi) => ({
+    mesh: new THREE.InstancedMesh(bladeGeo, mat, bladeSpecs.filter((s) => s.matIndex === gi).length),
+    cursor: 0,
+  }))
+  bladeBuckets.forEach(({ mesh }) => {
+    mesh.receiveShadow = true
+  })
+  bladeSpecs.forEach((s) => {
+    const bucket = bladeBuckets[s.matIndex]
+    dummy.position.set(s.x, s.groundY + s.height / 2, s.z)
+    dummy.rotation.set(0, s.rotY, 0)
+    dummy.scale.set(1, s.height, 1)
+    dummy.updateMatrix()
+    bucket.mesh.setMatrixAt(bucket.cursor++, dummy.matrix)
+  })
+  bladeBuckets.forEach(({ mesh }) => {
+    mesh.instanceMatrix.needsUpdate = true
+    group.add(mesh)
+  })
+
   return group
 }
 
@@ -1224,7 +1365,7 @@ export function buildWorld(scene) {
   const road = buildRoad()
   scene.add(road)
 
-  const { group: houseGroup, bedroomLight, sleepingChild } = buildHouse()
+  const { group: houseGroup, bedroomLight, sleepingChild, doorPivot, doorMat, windowGlassMeshes } = buildHouse()
   scene.add(houseGroup)
 
   // Decorative only (not a camera-collision obstacle) — added directly to
@@ -1241,6 +1382,7 @@ export function buildWorld(scene) {
   // the distance (and through the front door's glass pane) without needing
   // to be walked through.
   scene.add(buildVillage())
+  scene.add(buildVillageGreenery())
 
   const water = buildStream()
   scene.add(water)
@@ -1274,6 +1416,25 @@ export function buildWorld(scene) {
     torchGroupForest.update()
   }
 
+  // Called once the family gets back home the morning after — the door
+  // hangs open off a broken hinge, and every window pane (the back-window
+  // area's own glass doesn't exist since it's a real opening, so just the
+  // decorative side windows + the door's own pane) reads as smashed out.
+  let houseDamaged = false
+  function damageHouse() {
+    if (houseDamaged) return
+    houseDamaged = true
+    doorPivot.rotation.y = -1.1
+    doorMat.color.setHex(0x2a1f16)
+    for (const glass of windowGlassMeshes) {
+      glass.material.color.setHex(0x14181a)
+      glass.material.opacity = 0.5
+      glass.material.roughness = 0.9
+      glass.rotation.z = (Math.random() - 0.5) * 0.5
+      glass.rotation.x = (Math.random() - 0.5) * 0.3
+    }
+  }
+
   return {
     hemiLight,
     dirLight,
@@ -1289,6 +1450,7 @@ export function buildWorld(scene) {
     placePlank: () => placePlank(plank),
     torchGroupHouse,
     torchGroupForest,
+    damageHouse,
     update,
   }
 }

@@ -452,6 +452,7 @@ export class ZoneDirector {
       if (z > HOUSE_ARRIVAL_Z) {
         uiState.interactHint = ''
         showSubtitle('Home.', 3000)
+        this.world.damageHouse()
         this.stage = 'ended'
         this.stageElapsed = 0
       }
