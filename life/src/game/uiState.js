@@ -2,6 +2,11 @@ import { reactive } from 'vue'
 
 export const uiState = reactive({
   phase: 'title', // 'title' | 'playing' | 'ended' | 'gameover'
+  // The title screen renders immediately, independent of the async model
+  // loading in App.vue's onMounted — this stays false until that setup
+  // (ambience, zoneDirector, etc.) has actually finished, so the Begin
+  // button can't be clicked while any of that is still undefined.
+  ready: false,
   titleText: '1997',
   titleSubtext: 'A village in eastern Croatia.',
   subtitle: '',

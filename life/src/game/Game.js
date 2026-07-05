@@ -24,7 +24,7 @@ export class Game {
 
     this.composer = new EffectComposer(this.renderer)
     this.composer.addPass(new RenderPass(this.scene, this.camera))
-    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.4, 0.35, 0.92)
+    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.55, 0.4, 0.82)
     this.composer.addPass(this.bloomPass)
     this.composer.addPass(new OutputPass())
 

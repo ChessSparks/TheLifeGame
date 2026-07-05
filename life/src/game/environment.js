@@ -62,8 +62,8 @@ const PLANK_PLACED_Y = 0.06
 export const PLANK_SURFACE_Y = PLANK_PLACED_Y + PLANK_THICKNESS / 2
 
 // Where the player needs to get to during the escape's 'hiding' beat — just
-// behind the rock in the forest (see buildForest()'s rock, below), out of
-// the sweeping torchlight's view. See ZoneDirector's 'intro' stage.
+// behind the bush in the forest (see buildForest()'s hideout bush, below),
+// out of the sweeping torchlight's view. See ZoneDirector's 'intro' stage.
 export const HIDE_SPOT_X = 5.6
 export const HIDE_SPOT_Z = -30.3
 
@@ -629,32 +629,76 @@ function buildHouse() {
 
 // A perimeter picket fence around the house and yard, with a gate-sized gap
 // on the street-facing side lining up with the door and the mob's approach.
-function buildYardFence() {
+// Tiles clones of a fence-panel prototype (see models.js's anchor()) along
+// a straight axis-aligned run, spacing them by the panel's own real width
+// (measured off its bounding box) rather than a guessed constant.
+function tileFencePanels(group, prototype, x0, z0, x1, z1, gateRanges = []) {
+  const box = new THREE.Box3().setFromObject(prototype)
+  const panelWidth = Math.max(box.max.x - box.min.x, 0.4)
+  const dx = x1 - x0
+  const dz = z1 - z0
+  const totalLen = Math.hypot(dx, dz)
+  const count = Math.max(1, Math.round(totalLen / panelWidth))
+  const alongX = Math.abs(dx) >= Math.abs(dz)
+  for (let i = 0; i < count; i++) {
+    const t = (i + 0.5) / count
+    const px = x0 + dx * t
+    const pz = z0 + dz * t
+    const along = alongX ? px : pz
+    if (gateRanges.some(([a, b]) => along > a && along < b)) continue
+    const panel = prototype.clone()
+    panel.rotation.y = alongX ? 0 : Math.PI / 2
+    panel.position.set(px, 0, pz)
+    group.add(panel)
+  }
+}
+
+// Scatters many copies of a model prototype (see models.js's anchor()) as
+// InstancedMeshes instead of individual clones — one InstancedMesh per
+// distinct material in the prototype (usually just 1-2), regardless of how
+// many placements there are. Cloning hundreds of trees/bushes/grass patches
+// individually was costing a draw call (or several, for multi-material
+// models) per instance; this collapses that to a small constant number of
+// draw calls no matter how many placements are scattered.
+function scatterInstanced(group, prototype, placements) {
+  if (placements.length === 0) return
+  const merged = prototype.children[0]
+  const tempParent = new THREE.Object3D()
+  const tempChild = new THREE.Object3D()
+  tempChild.position.copy(merged.position)
+  tempParent.add(tempChild)
+
+  merged.children.forEach((mesh) => {
+    const inst = new THREE.InstancedMesh(mesh.geometry, mesh.material, placements.length)
+    inst.castShadow = mesh.castShadow
+    inst.receiveShadow = mesh.receiveShadow
+    placements.forEach((p, i) => {
+      tempParent.position.copy(p.position)
+      tempParent.rotation.set(0, p.rotationY || 0, 0)
+      tempParent.scale.setScalar(p.scale ?? 1)
+      tempParent.updateMatrixWorld(true)
+      inst.setMatrixAt(i, tempChild.matrixWorld)
+    })
+    inst.instanceMatrix.needsUpdate = true
+    group.add(inst)
+  })
+}
+
+function buildYardFence(models) {
   const group = new THREE.Group()
-  const FENCE_COLOR = 0x5a4632
   const halfW = 7.2
   const zBack = -3.5
   const zFront = 10.3
-  const spacing = 1.1
   const gateHalfWidth = 1.0
+  // Wider than the front gate — this is the escape route out through the
+  // back window (WINDOW_OUTSIDE_POS is at x=0), not just a walkway, so it
+  // needs enough clearance that a fence post never reads as blocking it.
+  const backGateHalfWidth = 1.8
 
-  function post(x, z) {
-    const p = brick(1, 1, 2, FENCE_COLOR, { studs: false })
-    p.position.set(x, 0, z)
-    group.add(p)
-  }
-
-  for (let z = zBack; z <= zFront + 0.01; z += spacing) {
-    post(-halfW, z)
-    post(halfW, z)
-  }
-  for (let x = -halfW; x <= halfW + 0.01; x += spacing) {
-    post(x, zBack)
-  }
-  for (let x = -halfW; x <= halfW + 0.01; x += spacing) {
-    if (Math.abs(x) < gateHalfWidth) continue // gate gap facing the street
-    post(x, zFront)
-  }
+  tileFencePanels(group, models.metalFence, -halfW, zBack, -halfW, zFront)
+  tileFencePanels(group, models.metalFence, halfW, zBack, halfW, zFront)
+  tileFencePanels(group, models.metalFence, -halfW, zBack, halfW, zBack, [[-backGateHalfWidth, backGateHalfWidth]])
+  tileFencePanels(group, models.metalFence, -halfW, zFront, halfW, zFront, [[-gateHalfWidth, gateHalfWidth]])
 
   return group
 }
@@ -733,71 +777,28 @@ function buildBarn(x, z) {
   return group
 }
 
-// A simple background house — walls + a roof, no interior/collision detail
-// (the player never walks out past the front yard/road in normal play, so
-// these are only ever seen from a distance). Used to fill out the village.
-function buildVillageHouse(x, z, rotY, wallColor, roofColor) {
+// A background house built from the real House.glb model, with a fenced
+// yard around it (using the real picket-fence model) — no interior/
+// collision detail, since the player never walks out past the front yard/
+// road in normal play and these are only ever seen from a distance.
+function buildVillageHouse(x, z, rotY, models) {
   const group = new THREE.Group()
-  const wallUnits = 6
-  const wallH = wallUnits * BRICK_H
-  const widthStuds = 9
-  const depthStuds = 8
-  const halfW = (widthStuds * STUD) / 2
-  const halfD = (depthStuds * STUD) / 2
 
-  const floorMat = new THREE.MeshStandardMaterial({ color: 0x4a3a2c, flatShading: true })
-  const floor = new THREE.Mesh(new THREE.BoxGeometry(halfW * 2, 0.1, halfD * 2), floorMat)
-  floor.position.y = -0.05
-  group.add(floor)
+  const house = models.villageHouse.clone()
+  group.add(house)
 
-  const backWall = brick(widthStuds, 1, wallUnits, wallColor, { studs: false })
-  backWall.position.set(0, 0, -halfD)
-  group.add(backWall)
-  const frontWall = brick(widthStuds, 1, wallUnits, wallColor, { studs: false })
-  frontWall.position.set(0, 0, halfD)
-  group.add(frontWall)
-  const leftWall = brick(1, depthStuds, wallUnits, wallColor, { studs: false })
-  leftWall.position.set(-halfW, 0, 0)
-  group.add(leftWall)
-  const rightWall = brick(1, depthStuds, wallUnits, wallColor, { studs: false })
-  rightWall.position.set(halfW, 0, 0)
-  group.add(rightWall)
-
-  const ceiling = new THREE.Mesh(new THREE.BoxGeometry(halfW * 2, 0.14, halfD * 2), floorMat)
-  ceiling.position.y = wallH + 0.07
-  group.add(ceiling)
-
-  const roof = slopeRoof(widthStuds + 2, depthStuds + 3, 2.2, roofColor)
-  roof.position.y = wallH + 0.65
-  group.add(roof)
-
-  // A small fence enclosure around the house's own yard — same "posts
-  // along the perimeter" approach as buildYardFence().
-  const FENCE_COLOR = 0x5a4632
+  // Just a low fence along the front, facing the road — a full perimeter
+  // around every house in the village added up to a lot of fence for
+  // scenery nobody walks up to.
+  const houseBox = new THREE.Box3().setFromObject(house)
+  const halfW = (houseBox.max.x - houseBox.min.x) / 2
+  const halfD = (houseBox.max.z - houseBox.min.z) / 2
   const fenceHalfW = halfW + 2.2
   const fenceHalfD = halfD + 2.6
-  const fenceSpacing = 1.1
-  function fencePost(px, pz) {
-    const p = brick(1, 1, 2, FENCE_COLOR, { studs: false })
-    p.position.set(px, 0, pz)
-    group.add(p)
-  }
-  for (let pz = -fenceHalfD; pz <= fenceHalfD + 0.01; pz += fenceSpacing) {
-    fencePost(-fenceHalfW, pz)
-    fencePost(fenceHalfW, pz)
-  }
-  for (let px = -fenceHalfW; px <= fenceHalfW + 0.01; px += fenceSpacing) {
-    fencePost(px, -fenceHalfD)
-    if (Math.abs(px) < 1.0) continue // gate gap facing the road
-    fencePost(px, fenceHalfD)
-  }
+  const gateHalfWidth = 1.0
 
-  group.traverse((o) => {
-    if (o.isMesh) {
-      o.castShadow = true
-      o.receiveShadow = true
-    }
-  })
+  tileFencePanels(group, models.fence, -fenceHalfW, fenceHalfD, fenceHalfW, fenceHalfD, [[-gateHalfWidth, gateHalfWidth]])
+
   group.position.set(x, 0, z)
   group.rotation.y = rotY
   return group
@@ -821,137 +822,145 @@ const VILLAGE_HOUSES = [
 // isolated house. Set back from the road itself and placed past the front
 // yard (z > ROAD_Z), which the player never actually walks out to in
 // normal play, so no collision needed.
-function buildVillage() {
+function buildVillage(models) {
   const group = new THREE.Group()
-  const palette = [
-    [0xb8a888, 0x5a3f30],
-    [0xc9c2ab, 0x4a3a2c],
-    [0xa89478, 0x3a2c28],
-    [0xbfae90, 0x6b4a36],
-  ]
-  VILLAGE_HOUSES.forEach(([x, z, rotY], i) => {
-    const [wallColor, roofColor] = palette[i % palette.length]
-    group.add(buildVillageHouse(x, z, rotY, wallColor, roofColor))
+  VILLAGE_HOUSES.forEach(([x, z, rotY]) => {
+    group.add(buildVillageHouse(x, z, rotY, models))
   })
   return group
 }
 
 // Trees, bushes, and grass scattered around the village so it doesn't read
-// as houses dropped on bare field — same instancing approach as
-// buildForest(), just over the village's z-range and kept clear of each
-// house's own fenced yard.
-function buildVillageGreenery() {
+// as houses dropped on bare field, using the real models (see models.js)
+// instead of procedural instanced primitives — kept clear of each house's
+// own fenced yard.
+function buildVillageGreenery(models) {
   const group = new THREE.Group()
-  const clearOfHouses = (x, z) => VILLAGE_HOUSES.every(([hx, hz]) => Math.hypot(x - hx, z - hz) > 5.5)
-  const dummy = new THREE.Object3D()
+  // The house+fence footprint's diagonal reach is ~9.6 units (halfW+2.2
+  // fence ~6.9, halfD+2.6 fence ~6.6) — a smaller radius here used to let
+  // vegetation spawn overlapping the fence/house corners.
+  const clearOfHouses = (x, z) => VILLAGE_HOUSES.every(([hx, hz]) => Math.hypot(x - hx, z - hz) > 10)
+  const treePrototypes = [models.pine, ...models.normalTrees]
+  // Shared across every scatter pass below so different prop types don't
+  // stack on/clip through each other — each pass checks against everything
+  // already placed (by itself and prior passes) before adding a new spot.
+  const placed = []
 
-  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x3a2c20, flatShading: true })
-  const canopyMats = [
-    new THREE.MeshStandardMaterial({ color: 0x2f4a24, flatShading: true }),
-    new THREE.MeshStandardMaterial({ color: 0x385228, flatShading: true }),
-    new THREE.MeshStandardMaterial({ color: 0x2a4020, flatShading: true }),
-  ]
-  const treeSpecs = []
-  const treeCount = 130
+  // Placements are grouped per-prototype (scatterInstanced needs uniform
+  // geometry per InstancedMesh) rather than cloned individually — with
+  // hundreds of instances, individual clones meant hundreds of draw calls
+  // each, which was the main source of the stuttering.
+  const treePlacements = treePrototypes.map(() => [])
+  const treeCount = 110
   for (let i = 0; i < treeCount; i++) {
     const x = (Math.random() - 0.5) * 70
     const z = ROAD_Z + 4 + Math.random() * 38
     if (!clearOfHouses(x, z)) continue
-    treeSpecs.push({
-      x,
-      z,
-      groundY: elevationAt(z),
-      trunkHeight: 1.6 + Math.random() * 1.6,
-      canopyHeight: 1.6 + Math.random() * 1.4,
-      canopyRadius: 0.7 + Math.random() * 0.5,
-      canopyRotY: Math.random() * Math.PI,
-      matIndex: i % canopyMats.length,
+    if (!farFromPlaced(placed, x, z, 2.2)) continue
+    const protoIdx = pickTreeIndex(treePrototypes.length)
+    treePlacements[protoIdx].push({
+      position: new THREE.Vector3(x, elevationAt(z), z),
+      rotationY: Math.random() * Math.PI * 2,
+      scale: 0.8 + Math.random() * 0.5,
     })
+    placed.push({ x, z })
   }
-  const trunkGeo = new THREE.CylinderGeometry(0.08, 0.14, 1, 5)
-  const trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, treeSpecs.length)
-  trunkMesh.castShadow = true
-  trunkMesh.receiveShadow = true
-  const canopyGeo = new THREE.ConeGeometry(1, 1, 6)
-  const canopyBuckets = canopyMats.map((mat, gi) => ({
-    mesh: new THREE.InstancedMesh(canopyGeo, mat, treeSpecs.filter((s) => s.matIndex === gi).length),
-    cursor: 0,
-  }))
-  canopyBuckets.forEach(({ mesh }) => {
-    mesh.castShadow = true
-    mesh.receiveShadow = true
-  })
-  treeSpecs.forEach((s, idx) => {
-    dummy.position.set(s.x, s.groundY + s.trunkHeight / 2, s.z)
-    dummy.rotation.set(0, 0, 0)
-    dummy.scale.set(1, s.trunkHeight, 1)
-    dummy.updateMatrix()
-    trunkMesh.setMatrixAt(idx, dummy.matrix)
-    const bucket = canopyBuckets[s.matIndex]
-    dummy.position.set(s.x, s.groundY + s.trunkHeight + s.canopyHeight / 2 - 0.2, s.z)
-    dummy.rotation.set(0, s.canopyRotY, 0)
-    dummy.scale.set(s.canopyRadius, s.canopyHeight, s.canopyRadius)
-    dummy.updateMatrix()
-    bucket.mesh.setMatrixAt(bucket.cursor++, dummy.matrix)
-  })
-  trunkMesh.instanceMatrix.needsUpdate = true
-  group.add(trunkMesh)
-  canopyBuckets.forEach(({ mesh }) => {
-    mesh.instanceMatrix.needsUpdate = true
-    group.add(mesh)
-  })
+  treePrototypes.forEach((proto, i) => scatterInstanced(group, proto, treePlacements[i]))
 
+  const bushPlacements = []
   const bushCount = 20
   for (let i = 0; i < bushCount; i++) {
     const x = (Math.random() - 0.5) * 70
     const z = ROAD_Z + 4 + Math.random() * 38
     if (!clearOfHouses(x, z)) continue
-    const bush = buildBerryBush(0.5 + Math.random() * 0.4)
-    bush.position.set(x, elevationAt(z), z)
-    bush.rotation.y = Math.random() * Math.PI * 2
-    group.add(bush)
+    if (!farFromPlaced(placed, x, z, 1.4)) continue
+    bushPlacements.push({
+      position: new THREE.Vector3(x, elevationAt(z), z),
+      rotationY: Math.random() * Math.PI * 2,
+      scale: 0.5 + Math.random() * 0.4,
+    })
+    placed.push({ x, z })
   }
+  scatterInstanced(group, models.bush, bushPlacements)
 
-  const bladeGeo = new THREE.CylinderGeometry(0.02, 0.06, 1, 3)
-  const bladeMats = [
-    new THREE.MeshStandardMaterial({ color: 0x4a7a3a, flatShading: true }),
-    new THREE.MeshStandardMaterial({ color: 0x3f6a30, flatShading: true }),
-  ]
-  const bladeSpecs = []
-  const bladeCount = 1600
-  for (let i = 0; i < bladeCount; i++) {
+  const fernPlacements = []
+  const plantPlacements = []
+  const fernPlantCount = 60
+  for (let i = 0; i < fernPlantCount; i++) {
+    const x = (Math.random() - 0.5) * 70
+    const z = ROAD_Z + 4 + Math.random() * 38
+    if (!clearOfHouses(x, z)) continue
+    if (!farFromPlaced(placed, x, z, 0.9)) continue
+    const placement = {
+      position: new THREE.Vector3(x, elevationAt(z), z),
+      rotationY: Math.random() * Math.PI * 2,
+      scale: 0.7 + Math.random() * 0.5,
+    }
+    if (Math.random() < 0.5) fernPlacements.push(placement)
+    else plantPlacements.push(placement)
+    placed.push({ x, z })
+  }
+  scatterInstanced(group, models.fern, fernPlacements)
+  scatterInstanced(group, models.plant, plantPlacements)
+
+  const rockPlacements = []
+  const rockCount = 25
+  for (let i = 0; i < rockCount; i++) {
+    const x = (Math.random() - 0.5) * 70
+    const z = ROAD_Z + 4 + Math.random() * 38
+    if (!clearOfHouses(x, z)) continue
+    if (!farFromPlaced(placed, x, z, 1.2)) continue
+    rockPlacements.push({
+      position: new THREE.Vector3(x, elevationAt(z), z),
+      rotationY: Math.random() * Math.PI * 2,
+      scale: 0.5 + Math.random() * 0.6,
+    })
+    placed.push({ x, z })
+  }
+  scatterInstanced(group, models.rock, rockPlacements)
+
+  // Kept small and low — this clump's native shape is almost as tall as
+  // it is wide, so scaling it up like the trees/bushes reads as a field of
+  // tiny conifers instead of ground cover. Grass is dense enough that it's
+  // only checked against the bigger props above (not against itself —
+  // clustering is normal for real grass), so it fills in around them
+  // without visibly poking through anything larger.
+  const grassPlacements = []
+  const grassCount = 180
+  for (let i = 0; i < grassCount; i++) {
     const x = (Math.random() - 0.5) * 74
     const z = ROAD_Z + 3 + Math.random() * 40
     if (!clearOfHouses(x, z)) continue
-    bladeSpecs.push({
-      x,
-      z,
-      groundY: elevationAt(z),
-      height: 0.15 + Math.random() * 0.2,
-      rotY: Math.random() * Math.PI,
-      matIndex: i % bladeMats.length,
+    if (!farFromPlaced(placed, x, z, 0.5)) continue
+    grassPlacements.push({
+      position: new THREE.Vector3(x, elevationAt(z), z),
+      rotationY: Math.random() * Math.PI * 2,
+      scale: 0.5 + Math.random() * 0.35,
     })
   }
-  const bladeBuckets = bladeMats.map((mat, gi) => ({
-    mesh: new THREE.InstancedMesh(bladeGeo, mat, bladeSpecs.filter((s) => s.matIndex === gi).length),
-    cursor: 0,
-  }))
-  bladeBuckets.forEach(({ mesh }) => {
-    mesh.receiveShadow = true
-  })
-  bladeSpecs.forEach((s) => {
-    const bucket = bladeBuckets[s.matIndex]
-    dummy.position.set(s.x, s.groundY + s.height / 2, s.z)
-    dummy.rotation.set(0, s.rotY, 0)
-    dummy.scale.set(1, s.height, 1)
-    dummy.updateMatrix()
-    bucket.mesh.setMatrixAt(bucket.cursor++, dummy.matrix)
-  })
-  bladeBuckets.forEach(({ mesh }) => {
-    mesh.instanceMatrix.needsUpdate = true
-    group.add(mesh)
-  })
+  scatterInstanced(group, models.grassPatch, grassPlacements)
 
+  return group
+}
+
+// Rocks scattered along the stream's banks (not in the water itself), kept
+// clear of the plank crossing corridor, so the riverbank reads as a real
+// place rather than a plain uniform edge.
+function buildStreamBankRocks(models) {
+  const group = new THREE.Group()
+  const bankZOffsets = [STREAM_HALF_DEPTH + 0.5, -(STREAM_HALF_DEPTH + 0.5)]
+  const count = 14
+  for (let i = 0; i < count; i++) {
+    const x = STREAM_CENTER_X + (Math.random() - 0.5) * 26
+    if (Math.abs(x - STREAM_CENTER_X) < PLANK_WIDTH + 1.2) continue // keep the crossing clear
+    const zOffset = bankZOffsets[Math.floor(Math.random() * bankZOffsets.length)]
+    const z = STREAM_CENTER_Z + zOffset + (Math.random() - 0.5) * 1.2
+    const rock = models.rock.clone()
+    rock.scale.setScalar(0.4 + Math.random() * 0.5)
+    rock.position.set(x, elevationAt(z), z)
+    rock.rotation.y = Math.random() * Math.PI * 2
+    group.add(rock)
+  }
   return group
 }
 
@@ -989,9 +998,15 @@ function updateWater(streamGroup, elapsed) {
     const x = base[ix]
     const z = base[ix + 2]
     // A ridge that travels along X over time (the river's length) reads as
-    // flowing current, layered under a smaller cross-wise ripple for texture.
+    // flowing current, with a cross-wise ripple, a diagonal chop, and a
+    // fine high-frequency ripple layered on top for a more turbulent,
+    // less uniformly-repeating surface.
     pos.array[ix + 1] =
-      base[ix + 1] + Math.sin(x * 0.5 - elapsed * 1.8) * 0.035 + Math.sin(z * 1.4 + elapsed * 0.7) * 0.015
+      base[ix + 1] +
+      Math.sin(x * 0.5 - elapsed * 1.8) * 0.035 +
+      Math.sin(z * 1.4 + elapsed * 0.7) * 0.015 +
+      Math.sin(x * 1.1 + z * 0.6 + elapsed * 1.3) * 0.012 +
+      Math.sin(x * 2.3 - elapsed * 2.6) * 0.006
   }
   pos.needsUpdate = true
 }
@@ -1030,63 +1045,48 @@ function distanceToPath(x, z) {
   return Math.abs(x - cx)
 }
 
-// Keeps trees/bushes clear of both the flooded crossing and the plank's
-// rest spot on the near bank — without this, scenery can spawn close
-// enough to visibly clip through the plank or crowd the crossing.
+// Keeps trees/bushes clear of the river itself — its water plane is 30
+// units wide along X (the river runs the full length of the visible
+// area, not just a narrow crossing point), so this has to exclude the
+// whole Z-band regardless of X, not just a narrow corridor around
+// STREAM_CENTER_X. That narrower check used to let trees spawn visibly
+// inside the water anywhere off to either side of the crossing.
 function nearStreamOrPlank(x, z) {
-  return z > FLOOD_SOUTH_Z - 3 && z < FLOOD_NORTH_Z + 1 && Math.abs(x - STREAM_CENTER_X) < 2.4
+  return z > FLOOD_SOUTH_Z - 3 && z < FLOOD_NORTH_Z + 1
 }
 
-// A rounded berry bush — a handful of overlapping foliage clumps with
-// scattered red berries. Used for the hideout's cover (in place of a plain
-// rock) and scattered again through the forest for ground-level variety.
-function buildBerryBush(scale = 1) {
-  const bushMat = new THREE.MeshStandardMaterial({ color: 0x2c4a24, flatShading: true })
-  const bushClumps = [
-    [0, 0.75, 0, 0.9],
-    [0.55, 0.55, 0.35, 0.65],
-    [-0.5, 0.5, -0.35, 0.6],
-    [0.15, 0.95, -0.5, 0.55],
-    [-0.35, 0.9, 0.5, 0.5],
-  ]
-  const bush = new THREE.Group()
-  for (const [cx, cy, cz, cr] of bushClumps) {
-    const clump = new THREE.Mesh(new THREE.IcosahedronGeometry(cr, 0), bushMat)
-    clump.position.set(cx, cy, cz)
-    clump.castShadow = true
-    clump.receiveShadow = true
-    bush.add(clump)
-  }
-  const berryMat = new THREE.MeshStandardMaterial({ color: 0xa8283a, flatShading: true })
-  const berryGeo = new THREE.SphereGeometry(0.07, 6, 6)
-  for (let i = 0; i < 18; i++) {
-    const [cx, cy, cz, cr] = bushClumps[Math.floor(Math.random() * bushClumps.length)]
-    const theta = Math.random() * Math.PI * 2
-    const phi = Math.random() * Math.PI
-    const br = cr * 0.95
-    const berry = new THREE.Mesh(berryGeo, berryMat)
-    berry.position.set(cx + Math.sin(phi) * Math.cos(theta) * br, cy + Math.cos(phi) * br, cz + Math.sin(phi) * Math.sin(theta) * br)
-    berry.castShadow = true
-    bush.add(berry)
-  }
-  bush.scale.setScalar(scale)
-  return bush
+// Keeps scattered props (trees, bushes, ferns, rocks, ...) clear of each
+// other — without this, different scatter passes place independently and
+// can end up stacked on/clipping through one another, since none of them
+// know about what a different pass already placed.
+function farFromPlaced(placed, x, z, minDist) {
+  return placed.every((p) => Math.hypot(x - p.x, z - p.z) > minDist)
 }
 
-function buildForest() {
+// treePrototypes is always [pine, ...normalTrees] — picking uniformly
+// across all of them would give pine only a 1-in-6 chance (since there
+// are 5 normalTrees variants), when what actually reads as "mixed forest"
+// is roughly half pines, half everything else. Index 0 is the pine.
+function pickTreeIndex(prototypeCount) {
+  if (Math.random() < 0.5) return 0
+  return 1 + Math.floor(Math.random() * (prototypeCount - 1))
+}
+
+function buildForest(models) {
   const group = new THREE.Group()
-  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x3a2c20, flatShading: true })
-  const canopyMats = [
-    new THREE.MeshStandardMaterial({ color: 0x1f3320, flatShading: true }),
-    new THREE.MeshStandardMaterial({ color: 0x24351f, flatShading: true }),
-    new THREE.MeshStandardMaterial({ color: 0x1a2c1e, flatShading: true }),
-  ]
+  const treePrototypes = [models.pine, ...models.normalTrees]
+  // Shared across every scatter pass below so different prop types don't
+  // stack on/clip through each other — each pass checks against everything
+  // already placed (by itself and prior passes) before adding a new spot.
+  const placed = []
 
-  // Gather placements first so we know exact per-material instance counts
-  // before allocating the InstancedMeshes.
-  const specs = []
-  const count = 170
-  for (let i = 0; i < count; i++) {
+  // Placements are grouped per-prototype (scatterInstanced needs uniform
+  // geometry per InstancedMesh) rather than cloned individually — with
+  // hundreds of instances, individual clones meant hundreds of draw calls
+  // each, which was the main source of the stuttering.
+  const treePlacements = treePrototypes.map(() => [])
+  const treeCount = 210
+  for (let i = 0; i < treeCount; i++) {
     // Extends up to z = -1 (right behind the house) so the yard the player
     // actually runs through has a few trees too, not just bare baseplate.
     const z = -1 - Math.random() * 35
@@ -1099,79 +1099,40 @@ function buildForest() {
     // otherwise a tree can spawn close enough to visibly poke into the
     // back-window view, or clip the wall, right where the house is widest.
     if (Math.abs(x) < HOUSE_HALF_WIDTH + 1.0 && z > HOUSE_BACK_Z - 1.5) continue
-    specs.push({
-      x,
-      z,
-      groundY: elevationAt(z),
-      trunkHeight: 1.6 + Math.random() * 1.6,
-      canopyHeight: 1.6 + Math.random() * 1.4,
-      canopyRadius: 0.7 + Math.random() * 0.5,
-      canopyRotY: Math.random() * Math.PI,
-      matIndex: i % canopyMats.length,
+    if (!farFromPlaced(placed, x, z, 2.2)) continue
+    const protoIdx = pickTreeIndex(treePrototypes.length)
+    treePlacements[protoIdx].push({
+      position: new THREE.Vector3(x, elevationAt(z), z),
+      rotationY: Math.random() * Math.PI * 2,
+      scale: 0.7 + Math.random() * 0.5,
     })
+    placed.push({ x, z })
   }
+  treePrototypes.forEach((proto, i) => scatterInstanced(group, proto, treePlacements[i]))
 
-  const dummy = new THREE.Object3D()
-
-  const trunkGeo = new THREE.CylinderGeometry(0.08, 0.14, 1, 5)
-  const trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, specs.length)
-  trunkMesh.castShadow = true
-  trunkMesh.receiveShadow = true
-
-  const canopyGeo = new THREE.ConeGeometry(1, 1, 6)
-  const canopyBuckets = canopyMats.map((mat, gi) => ({
-    mesh: new THREE.InstancedMesh(canopyGeo, mat, specs.filter((s) => s.matIndex === gi).length),
-    cursor: 0,
-  }))
-  canopyBuckets.forEach(({ mesh }) => {
-    mesh.castShadow = true
-    mesh.receiveShadow = true
-  })
-
-  specs.forEach((s, idx) => {
-    dummy.position.set(s.x, s.groundY + s.trunkHeight / 2, s.z)
-    dummy.rotation.set(0, 0, 0)
-    dummy.scale.set(1, s.trunkHeight, 1)
-    dummy.updateMatrix()
-    trunkMesh.setMatrixAt(idx, dummy.matrix)
-
-    const bucket = canopyBuckets[s.matIndex]
-    dummy.position.set(s.x, s.groundY + s.trunkHeight + s.canopyHeight / 2 - 0.2, s.z)
-    dummy.rotation.set(0, s.canopyRotY, 0)
-    dummy.scale.set(s.canopyRadius, s.canopyHeight, s.canopyRadius)
-    dummy.updateMatrix()
-    bucket.mesh.setMatrixAt(bucket.cursor++, dummy.matrix)
-  })
-  trunkMesh.instanceMatrix.needsUpdate = true
-  group.add(trunkMesh)
-  canopyBuckets.forEach(({ mesh }) => {
-    mesh.instanceMatrix.needsUpdate = true
-    group.add(mesh)
-  })
-
-  // The berry bush near the hideout for cover, in place of a plain rock
-  const hideoutBush = buildBerryBush()
-  hideoutBush.position.set(5.6, elevationAt(-29.5), -29)
-  hideoutBush.rotation.y = 0.6
-  group.add(hideoutBush)
-
-  // More bushes scattered through the forest for ground-level variety,
-  // kept clear of the path and (lightly) clear of each other.
+  // The berry bush near the hideout for cover (in place of a plain rock),
+  // plus more scattered through the forest for ground-level variety —
+  // all one instanced batch, since they're all the same prototype.
+  const bushPlacements = [{ position: new THREE.Vector3(5.6, elevationAt(-29.5), -29), rotationY: 0.6, scale: 1 }]
+  placed.push({ x: 5.6, z: -29 })
   const scatterBushCount = 26
   for (let i = 0; i < scatterBushCount; i++) {
     const z = -3 - Math.random() * 32
     const x = (Math.random() - 0.5) * 22
     if (distanceToPath(x, z) < 1.8) continue
     if (nearStreamOrPlank(x, z)) continue
-    if (Math.abs(x - 5.6) < 2 && Math.abs(z + 29) < 2) continue // skip right on top of the hideout bush
-    const scatterBush = buildBerryBush(0.55 + Math.random() * 0.45)
-    scatterBush.position.set(x, elevationAt(z), z)
-    scatterBush.rotation.y = Math.random() * Math.PI * 2
-    group.add(scatterBush)
+    if (!farFromPlaced(placed, x, z, 1.4)) continue
+    bushPlacements.push({
+      position: new THREE.Vector3(x, elevationAt(z), z),
+      rotationY: Math.random() * Math.PI * 2,
+      scale: 0.55 + Math.random() * 0.45,
+    })
+    placed.push({ x, z })
   }
+  scatterInstanced(group, models.bush, bushPlacements)
 
   // A soft patch of moonlight breaking through the canopy right where the
-  // player needs to get to behind the rock — see HIDE_SPOT_X/Z above and
+  // player needs to get to behind the bush — see HIDE_SPOT_X/Z above and
   // ZoneDirector's 'intro' stage in zones.js.
   const hideGlowMat = new THREE.MeshBasicMaterial({
     map: makeGlowTexture('rgba(210,225,255,0.6)', 'rgba(210,225,255,0)'),
@@ -1185,70 +1146,78 @@ function buildForest() {
   hideGlow.position.set(HIDE_SPOT_X, elevationAt(HIDE_SPOT_Z) + 0.03, HIDE_SPOT_Z)
   group.add(hideGlow)
 
-  // Grass blades scattered across the forest floor, same bucket-instancing
-  // approach as the trunks/canopies above.
-  const bladeGeo = new THREE.CylinderGeometry(0.02, 0.06, 1, 3)
-  const bladeMats = [
-    new THREE.MeshStandardMaterial({ color: 0x3a5a2c, flatShading: true }),
-    new THREE.MeshStandardMaterial({ color: 0x2f4a24, flatShading: true }),
-  ]
-  const bladeSpecs = []
-  const bladeCount = 2000
-  for (let i = 0; i < bladeCount; i++) {
+  const fernPlacements = []
+  const plantPlacements = []
+  const fernPlantCount = 90
+  for (let i = 0; i < fernPlantCount; i++) {
+    const z = -3 - Math.random() * 32
+    const x = (Math.random() - 0.5) * 22
+    if (distanceToPath(x, z) < 1.5) continue
+    if (nearStreamOrPlank(x, z)) continue
+    if (Math.abs(x) < HOUSE_HALF_WIDTH + 1.0 && z > HOUSE_BACK_Z - 1.5) continue
+    if (!farFromPlaced(placed, x, z, 0.9)) continue
+    const placement = {
+      position: new THREE.Vector3(x, elevationAt(z), z),
+      rotationY: Math.random() * Math.PI * 2,
+      scale: 0.7 + Math.random() * 0.5,
+    }
+    if (Math.random() < 0.5) fernPlacements.push(placement)
+    else plantPlacements.push(placement)
+    placed.push({ x, z })
+  }
+  scatterInstanced(group, models.fern, fernPlacements)
+  scatterInstanced(group, models.plant, plantPlacements)
+
+  const rockPlacements = []
+  const rockCount = 35
+  for (let i = 0; i < rockCount; i++) {
+    const z = -1 - Math.random() * 35
+    const x = (Math.random() - 0.5) * 22
+    if (distanceToPath(x, z) < 1.5) continue
+    if (nearStreamOrPlank(x, z)) continue
+    if (Math.abs(x) < HOUSE_HALF_WIDTH + 1.0 && z > HOUSE_BACK_Z - 1.5) continue
+    if (!farFromPlaced(placed, x, z, 1.2)) continue
+    rockPlacements.push({
+      position: new THREE.Vector3(x, elevationAt(z), z),
+      rotationY: Math.random() * Math.PI * 2,
+      scale: 0.5 + Math.random() * 0.6,
+    })
+    placed.push({ x, z })
+  }
+  scatterInstanced(group, models.rock, rockPlacements)
+
+  // Grass patches scattered across the forest floor, using the real model.
+  // Kept small and low — this clump's native shape is almost as tall as
+  // it is wide, so scaling it up like the trees/bushes reads as a field of
+  // tiny conifers instead of ground cover. Only checked against the bigger
+  // props above (not against itself — clustering is normal for real
+  // grass), so it fills in around them without visibly poking through
+  // anything larger.
+  const grassPlacements = []
+  const grassCount = 220
+  for (let i = 0; i < grassCount; i++) {
     const z = -18 - Math.random() * 18
     const x = (Math.random() - 0.5) * 24
-    bladeSpecs.push({
-      x,
-      z,
-      groundY: elevationAt(z),
-      height: 0.15 + Math.random() * 0.2,
-      rotY: Math.random() * Math.PI,
-      matIndex: i % bladeMats.length,
+    if (!farFromPlaced(placed, x, z, 0.5)) continue
+    grassPlacements.push({
+      position: new THREE.Vector3(x, elevationAt(z), z),
+      rotationY: Math.random() * Math.PI * 2,
+      scale: 0.5 + Math.random() * 0.35,
     })
   }
-  const bladeBuckets = bladeMats.map((mat, gi) => ({
-    mesh: new THREE.InstancedMesh(bladeGeo, mat, bladeSpecs.filter((s) => s.matIndex === gi).length),
-    cursor: 0,
-  }))
-  bladeBuckets.forEach(({ mesh }) => {
-    mesh.receiveShadow = true
-  })
-  bladeSpecs.forEach((s) => {
-    const bucket = bladeBuckets[s.matIndex]
-    dummy.position.set(s.x, s.groundY + s.height / 2, s.z)
-    dummy.rotation.set(0, s.rotY, 0)
-    dummy.scale.set(1, s.height, 1)
-    dummy.updateMatrix()
-    bucket.mesh.setMatrixAt(bucket.cursor++, dummy.matrix)
-  })
-  bladeBuckets.forEach(({ mesh }) => {
-    mesh.instanceMatrix.needsUpdate = true
-    group.add(mesh)
-  })
+  scatterInstanced(group, models.grassPatch, grassPlacements)
 
   return group
 }
 
 // A single street lamp: pole + glowing head + warm point light, lighting
 // the approach street the way the bedroom light/torches light the yard.
-function buildStreetLamp(x, z) {
+function buildStreetLamp(x, z, models) {
   const group = new THREE.Group()
-  const poleMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2c, flatShading: true, roughness: 0.6 })
   const poleHeight = 3.4
-  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, poleHeight, 6), poleMat)
-  pole.position.set(x, poleHeight / 2, z)
-  pole.castShadow = true
-  group.add(pole)
-
-  const headMat = new THREE.MeshStandardMaterial({
-    color: 0xffdca0,
-    emissive: 0xffb35c,
-    emissiveIntensity: 1.4,
-    flatShading: true,
-  })
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 6), headMat)
-  head.position.set(x, poleHeight + 0.05, z)
-  group.add(head)
+  const streetlight = models.streetlight.clone()
+  streetlight.position.set(x, 0, z)
+  group.add(streetlight)
 
   const glowMat = new THREE.SpriteMaterial({
     map: makeGlowTexture('rgba(255,210,140,0.9)', 'rgba(255,170,80,0)'),
@@ -1259,12 +1228,14 @@ function buildStreetLamp(x, z) {
     blending: THREE.AdditiveBlending,
   })
   const glow = new THREE.Sprite(glowMat)
-  glow.position.copy(head.position)
+  glow.position.set(x, poleHeight + 0.05, z)
   glow.scale.setScalar(1.6)
   group.add(glow)
 
+  // The model itself has no actual light source — a real THREE.PointLight
+  // is still needed for it to light up anything around it.
   const light = new THREE.PointLight(0xffb35c, 2.0, 8)
-  light.position.copy(head.position)
+  light.position.set(x, poleHeight + 0.05, z)
   group.add(light)
 
   return group
@@ -1272,7 +1243,7 @@ function buildStreetLamp(x, z) {
 
 // A row of lamps lighting the road the mob comes down, spaced along it
 // (alternating slightly off-center) rather than blocking the driveway gate.
-function buildStreetLamps() {
+function buildStreetLamps(models) {
   const group = new THREE.Group()
   const positions = [
     [-18, ROAD_Z - 1.4],
@@ -1280,7 +1251,7 @@ function buildStreetLamps() {
     [6, ROAD_Z - 1.4],
     [18, ROAD_Z + 1.4],
   ]
-  positions.forEach(([x, z]) => group.add(buildStreetLamp(x, z)))
+  positions.forEach(([x, z]) => group.add(buildStreetLamp(x, z, models)))
   return group
 }
 
@@ -1323,7 +1294,7 @@ function buildMoon() {
   return { group, setOpacity }
 }
 
-export function buildWorld(scene) {
+export function buildWorld(scene, models) {
   const hemiLight = new THREE.HemisphereLight(0x3a5590, 0x445a34, 2.6)
   scene.add(hemiLight)
   // A flat, angle-independent fill so no surface ever goes fully black,
@@ -1349,17 +1320,23 @@ export function buildWorld(scene) {
   const ground = buildGround()
   scene.add(ground)
 
-  const streetLamps = buildStreetLamps()
+  const streetLamps = buildStreetLamps(models)
   scene.add(streetLamps)
 
   // A patch of LEGO baseplate in the yard behind the house, where the ground
   // is "tamed" — it gives way to loose, organic forest terrain further out.
-  const yardPlate = baseplateTile(34, 26, 0x3f8a3f)
+  // Depth (20 studs = 8 units) is sized to stop at z=-9, right before
+  // GROUND_KEYS' terrain starts dipping toward the stream bank at z=-9.6 —
+  // it used to run to z=-11.4 (26 studs), overlapping that dip while
+  // sitting at a fixed flat height, so walking there looked like sinking
+  // through solid ground (the player's real elevation follows the dip;
+  // the tile itself doesn't).
+  const yardPlate = baseplateTile(34, 20, 0x3f8a3f)
   // Kept clear of the house's own floor (its near edge sits right at the
   // back wall, not past it) — it used to overlap 0.7 units into the
   // interior while sitting higher than the house floor, poking the green
   // baseplate up through the back window's view from inside.
-  yardPlate.position.set(0, 0.05, HOUSE_BACK_Z - 5.2)
+  yardPlate.position.set(0, 0.05, HOUSE_BACK_Z - 4)
   scene.add(yardPlate)
 
   const road = buildRoad()
@@ -1371,7 +1348,7 @@ export function buildWorld(scene) {
   // Decorative only (not a camera-collision obstacle) — added directly to
   // the scene rather than houseGroup so thin fence posts don't snag the
   // camera's raycast against world.houseGroup.
-  scene.add(buildYardFence())
+  scene.add(buildYardFence(models))
 
   // A barn in the back yard (left side), where the player actually runs
   // during the escape — the front yard past the fence is never visited in
@@ -1381,16 +1358,17 @@ export function buildWorld(scene) {
   // A small village along the road, out past the front yard — visible in
   // the distance (and through the front door's glass pane) without needing
   // to be walked through.
-  scene.add(buildVillage())
-  scene.add(buildVillageGreenery())
+  scene.add(buildVillage(models))
+  scene.add(buildVillageGreenery(models))
 
   const water = buildStream()
   scene.add(water)
+  scene.add(buildStreamBankRocks(models))
 
   const plank = buildPlank()
   scene.add(plank)
 
-  const forest = buildForest()
+  const forest = buildForest(models)
   scene.add(forest)
 
   const emberField = createEmberField(60, 20)

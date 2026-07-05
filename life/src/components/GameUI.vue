@@ -17,7 +17,7 @@
       <h1>{{ uiState.titleText }}</h1>
       <p>{{ uiState.titleSubtext }}</p>
       <p class="note">A short, true memory. Best with sound on and a moment of quiet.</p>
-      <button @click="$emit('begin')">Begin</button>
+      <button :disabled="!uiState.ready" @click="$emit('begin')">{{ uiState.ready ? 'Begin' : 'Loading…' }}</button>
     </div>
 
     <div v-if="uiState.phase === 'ended'" class="card end-card">

@@ -37,7 +37,7 @@ const HOUSE_ARRIVAL_Z = 1.2
 // side-by-side would put him off the plank's width and into the water.
 const UNCLE_SIDE_OFFSET = new THREE.Vector3(1.4, 0, 0.6)
 const UNCLE_INLINE_OFFSET = new THREE.Vector3(0, 0, -1.1)
-// How close to the rock counts as "hidden behind it".
+// How close to the bush counts as "hidden behind it".
 const HIDE_RADIUS = 2.2
 const HIDE_SPOT = new THREE.Vector3(HIDE_SPOT_X, 0, HIDE_SPOT_Z)
 // Where dad (and the uncle) get physically held back until the window
@@ -48,6 +48,10 @@ const HIDE_SPOT = new THREE.Vector3(HIDE_SPOT_X, 0, HIDE_SPOT_Z)
 // reaching this line auto-triggers the climb — no keypress needed.
 const WINDOW_BARRIER_Z = WINDOW_INSIDE_POS.z - 0.6
 const WINDOW_CLIMB_DURATION = 1.1
+// On the morning return trip, they climb back IN through the same window —
+// this is how far out they need to be, approaching from the yard, before
+// that mirror-image climb kicks in (see the climb-back block in update()).
+const RETURN_WINDOW_BARRIER_Z = WINDOW_OUTSIDE_POS.z - 0.6
 
 // Ground-plane-only distance — proximity checks (bed, plank) care about
 // where the player is standing on the map, not how it compares to a
@@ -87,6 +91,12 @@ export class ZoneDirector {
     // the same way instead of just walking around to it.
     this.uncleClimbAnimT = null
     this.uncleClimbStart = null
+    // The mirror-image climb back IN through the same window, on the
+    // morning return trip — see the climb-back block in update().
+    this.climbedBackIn = false
+    this.climbBackAnimT = null
+    this.uncleClimbBackAnimT = null
+    this.uncleClimbBackStart = null
     uiState.fadeOpacity = 1
   }
 
@@ -239,6 +249,54 @@ export class ZoneDirector {
       }
     }
 
+    // The mirror-image climb back IN through the same window, on the way
+    // home the morning after — same "no click needed, auto-triggers on
+    // approach" philosophy as the original climb out.
+    if (this.wentThroughWindow && !this.climbedBackIn && this.stage === 'return') {
+      if (this.climbBackAnimT !== null) {
+        this.climbBackAnimT += dt / WINDOW_CLIMB_DURATION
+        const t = Math.min(this.climbBackAnimT, 1)
+        const eased = t * t * (3 - 2 * t)
+        this.playerMount.position.lerpVectors(WINDOW_OUTSIDE_POS, WINDOW_INSIDE_POS, eased)
+        this.playerMount.position.y = elevationAt(this.playerMount.position.z) + Math.sin(t * Math.PI) * 0.5
+        this.playerMount.rotation.x = -Math.sin(t * Math.PI) * 0.4
+        z = this.playerMount.position.z
+        if (t >= 1) {
+          this.climbBackAnimT = null
+          this.playerMount.rotation.x = 0
+          this.climbedBackIn = true
+          this.world.playerController.setEnabled(true)
+          showSubtitle('Back inside. Almost home.', 3000)
+          // The uncle follows the same way, right behind, same as the
+          // original climb out.
+          this.uncleClimbBackAnimT = 0
+          this.uncleClimbBackStart = this.world.uncleMount.position.clone()
+        }
+      } else if (z > RETURN_WINDOW_BARRIER_Z && Math.abs(this.playerMount.position.x) < 1.3) {
+        // The x check matters here in a way it doesn't for the original
+        // climb out: this threshold sits well outside the house (in open
+        // yard), so unlike the exit (where the wall collider already keeps
+        // the player near x=0 by the time they reach it), a player walking
+        // back at any x could otherwise trigger this from the wrong spot.
+        this.climbBackAnimT = 0
+        this.world.playerController.setEnabled(false)
+      }
+    }
+
+    if (this.uncleClimbBackAnimT !== null) {
+      this.uncleClimbBackAnimT += dt / WINDOW_CLIMB_DURATION
+      const ut = Math.min(this.uncleClimbBackAnimT, 1)
+      const ueased = ut * ut * (3 - 2 * ut)
+      const uncleMount = this.world.uncleMount
+      uncleMount.position.lerpVectors(this.uncleClimbBackStart, WINDOW_INSIDE_POS, ueased)
+      uncleMount.position.y = elevationAt(uncleMount.position.z) + Math.sin(ut * Math.PI) * 0.5
+      uncleMount.rotation.x = -Math.sin(ut * Math.PI) * 0.4
+      if (ut >= 1) {
+        this.uncleClimbBackAnimT = null
+        uncleMount.rotation.x = 0
+      }
+    }
+
     if (this.stage === 'approach') {
       this.once('mob-visible', () => showSubtitle("Something's coming up the road.", 4000))
       // Tension is driven by real crowd proximity (arrivedRatio) rather than
@@ -335,10 +393,10 @@ export class ZoneDirector {
 
       if (this.stage === 'intro') {
         // Reaching the hideout isn't just about z — the player has to
-        // actually walk behind the rock, out of the torchlight's sweep.
+        // actually walk behind the bush, out of the torchlight's sweep.
         const distToHide = horizontalDistance(this.playerMount.position, HIDE_SPOT)
         if (z < -25) {
-          uiState.interactHint = distToHide < HIDE_RADIUS ? '' : 'Get behind the rock'
+          uiState.interactHint = distToHide < HIDE_RADIUS ? '' : 'Get behind the bush'
         }
         if (distToHide < HIDE_RADIUS) {
           uiState.interactHint = ''
@@ -365,7 +423,7 @@ export class ZoneDirector {
         this.stageElapsed = 0
       }
     } else if (this.stage === 'waitPrompt') {
-      // No click needed — once behind the rock, they just wait it out and
+      // No click needed — once behind the bush, they just wait it out and
       // morning comes on its own.
       this.world.torchGroupForest.intensity *= 0.97
       if (this.stageElapsed > 4) {
@@ -384,6 +442,9 @@ export class ZoneDirector {
         uiState.fadeOpacity = t / 0.3
       } else if (t < 0.5) {
         uiState.fadeOpacity = 1
+        // Screen's fully black here — a beat to read "the next morning" on,
+        // rather than just a silent hold.
+        this.once('next-morning-text', () => showSubtitle('The next morning...', 3000))
       } else {
         const dt2 = (t - 0.5) / 0.5
         uiState.fadeOpacity = 1 - dt2

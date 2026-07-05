@@ -8,7 +8,7 @@
 <script setup>
 import { onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import * as THREE from 'three'
-import { Game } from './game/Game'
+import { Game } from './game/game'
 import { buildWorld, elevationAt } from './game/environment'
 import { createDadFigure, createUncleFigure, createBoyFigure } from './game/characters'
 import { createPlayerController } from './game/player'
@@ -18,6 +18,8 @@ import { createMobCrowd } from './game/mob'
 import { ZoneDirector } from './game/zones'
 import { Ambience } from './game/audio'
 import { uiState } from './game/uiState'
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { loadModels } from './game/models'
 import GameUI from './components/GameUI.vue'
 
 const canvasEl = ref(null)
@@ -61,12 +63,17 @@ function onRestart() {
   window.location.reload()
 }
 
-onMounted(() => {
+onMounted(async () => {
   const canvas = canvasEl.value
   game = new Game(canvas)
   handleResize()
 
-  const world = buildWorld(game.scene)
+  // Real 3D models (trees, bushes, fences, streetlights, background village
+  // houses) — loaded before the world is built so buildWorld() can use them
+  // right away instead of falling back to the old procedural geometry.
+  const models = await loadModels()
+
+  const world = buildWorld(game.scene, models)
 
   const dad = createDadFigure()
   // Spawn inside the house — the mob approaches and attacks from outside
@@ -112,7 +119,52 @@ onMounted(() => {
   ambience = new Ambience()
 
   if (process.env.NODE_ENV !== 'production') {
-    window.__debug = { game, world, dad, uncle, boy, mobCrowd, zoneDirector, uiState, playerController, thirdPersonCam }
+    window.__debug = { game, world, dad, uncle, boy, mobCrowd, zoneDirector, uiState, playerController, thirdPersonCam, models }
+    // TEMPORARY: exposes THREE itself so test scripts can construct real
+    // Box3/Vector3 instances against live scene objects. Remove once the
+    // soldier leg-mesh identification work is done.
+    window.__debug.THREE = THREE
+    // TEMPORARY: inspects a GLTF model's real bounding box (min/max/size)
+    // via an actual GLTFLoader parse, so scale factors can be worked out
+    // for the newly added model assets. Remove once that's done.
+    const gltfLoader = new GLTFLoader()
+    window.__debug.inspectModel = (url) =>
+      new Promise((resolve, reject) => {
+        gltfLoader.load(
+          url,
+          (gltf) => {
+            const box = new THREE.Box3().setFromObject(gltf.scene)
+            const size = new THREE.Vector3()
+            box.getSize(size)
+            const center = new THREE.Vector3()
+            box.getCenter(center)
+            let skinnedCount = 0
+            let hasBones = false
+            const topLevelBoxes = gltf.scene.children.map((child) => {
+              const b = new THREE.Box3().setFromObject(child)
+              const s = new THREE.Vector3()
+              b.getSize(s)
+              return { name: child.name, size: s.toArray(), min: b.min.toArray() }
+            })
+            gltf.scene.traverse((o) => {
+              if (o.isSkinnedMesh) skinnedCount++
+              if (o.isBone) hasBones = true
+            })
+            resolve({
+              min: box.min.toArray(),
+              max: box.max.toArray(),
+              size: size.toArray(),
+              center: center.toArray(),
+              animations: gltf.animations.map((a) => ({ name: a.name, duration: a.duration })),
+              skinnedCount,
+              hasBones,
+              topLevelBoxes,
+            })
+          },
+          undefined,
+          (err) => reject(err && err.message)
+        )
+      })
   }
 
   game.addUpdatable((dt) => {
@@ -164,6 +216,8 @@ onMounted(() => {
     resizeObserver = new ResizeObserver(handleResize)
     resizeObserver.observe(canvas)
   }
+
+  uiState.ready = true
 })
 
 onBeforeUnmount(() => {
