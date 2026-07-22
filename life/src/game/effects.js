@@ -4,8 +4,15 @@ import { makeGlowTexture } from './textures'
 const emberTexture = makeGlowTexture('rgba(255,210,150,1)', 'rgba(255,140,40,0)')
 
 // A cluster of warm flickering "torches" used to suggest the mob without depicting it directly.
+// Every THREE.PointLight added to the scene gets looped over in the fragment
+// shader of every MeshStandardMaterial on screen, regardless of distance —
+// so one real light per sprite (used to be `count` of them, up to 10) was a
+// flat per-pixel tax across the whole scene. Only `lightCount` of the
+// sprites get a real attached light now (their intensity is boosted to
+// compensate for the ones that lost theirs); the rest are glow-only, which
+// reads the same at a glance since they're a tight flickering cluster.
 export class TorchGroup {
-  constructor(count, spread) {
+  constructor(count, spread, lightCount = Math.min(count, 3)) {
     this.group = new THREE.Group()
     this.lights = []
     this.sprites = []
@@ -24,24 +31,31 @@ export class TorchGroup {
       sprite.position.set((Math.random() - 0.5) * spread, 1.2 + Math.random() * 0.4, (Math.random() - 0.5) * spread)
       this.group.add(sprite)
       this.sprites.push(sprite)
-
-      const light = new THREE.PointLight(0xff9a4d, 0, 9)
-      light.position.copy(sprite.position)
-      this.group.add(light)
-      this.lights.push(light)
-
       this.phases.push(Math.random() * Math.PI * 2)
+
+      if (i < lightCount) {
+        const light = new THREE.PointLight(0xff9a4d, 0, 9)
+        light.position.copy(sprite.position)
+        this.group.add(light)
+        this.lights.push(light)
+      }
     }
 
     this.intensity = 0
+    // Fewer real lights now cover the same area the full sprite count used
+    // to imply — scale each one up so the group still reads as brightly lit.
+    this.lightBoost = count / Math.max(this.lights.length, 1)
   }
 
   update() {
     const time = performance.now() * 0.001
+    for (let i = 0; i < this.sprites.length; i++) {
+      const flicker = 0.65 + Math.sin(time * (4 + i) + this.phases[i]) * 0.2 + Math.random() * 0.15
+      this.sprites[i].material.opacity = this.intensity * flicker
+    }
     for (let i = 0; i < this.lights.length; i++) {
       const flicker = 0.65 + Math.sin(time * (4 + i) + this.phases[i]) * 0.2 + Math.random() * 0.15
-      this.lights[i].intensity = this.intensity * flicker * 2.4
-      this.sprites[i].material.opacity = this.intensity * flicker
+      this.lights[i].intensity = this.intensity * flicker * 2.4 * this.lightBoost
     }
   }
 }

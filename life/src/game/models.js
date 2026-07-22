@@ -21,7 +21,6 @@ const MODEL_URLS = {
   streetlight: '/models/Streetlight.glb',
   trees: '/models/Trees.glb',
   soldier: '/models/Soldier.glb',
-  vrGuy: '/models/VR Guys.glb',
 }
 
 function enableShadows(root) {
@@ -217,14 +216,6 @@ export async function loadModels() {
   models.soldier = anchor(raw.soldier.scene, { skipMerge: true })
   enableShadows(models.soldier)
   models.soldierAnimations = raw.soldier.animations
-
-  // VR Guys.glb (despite the plural name) is one static character
-  // assembled from 21 body-part meshes, no bones/animation — used for dad
-  // and uncle (see characters.js's createHumanFigure()), which can't do
-  // the minifigure's leg/arm swing but still gets the vertical walk bob.
-  raw.vrGuy.scene.scale.setScalar(1.6 / 3.1235324144363403)
-  models.vrGuy = anchor(raw.vrGuy.scene)
-  enableShadows(models.vrGuy)
 
   return models
 }

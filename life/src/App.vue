@@ -95,7 +95,7 @@ onMounted(async () => {
   boy.mount.visible = false
   game.scene.add(boy.mount)
 
-  mobCrowd = createMobCrowd(16)
+  mobCrowd = createMobCrowd(models, 16)
   game.scene.add(mobCrowd.group)
 
   thirdPersonCam = createThirdPersonCamera(game.camera, dad.mount, canvas, {

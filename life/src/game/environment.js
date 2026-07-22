@@ -1,7 +1,8 @@
 import * as THREE from 'three'
 import { TorchGroup, createEmberField, updateEmberField } from './effects'
 import { makeMoonTexture, makeGlowTexture } from './textures'
-import { brick, slopeRoof, baseplateTile, BRICK_H, STUD, buildMinifigure } from './lego'
+import { brick, slopeRoof, BRICK_H, STUD } from './lego'
+import { buildHumanFigure } from './characters'
 
 // Ground elevation keyframes: [z, groundY]. Linear interpolation between them.
 const GROUND_KEYS = [
@@ -220,15 +221,12 @@ export function resolveWallCollision(pos, radius, colliders) {
   }
 }
 
-// The same minifigure used for the standalone "boy" figure (see
+// The same procedural human figure used for the standalone "boy" (see
 // createBoyFigure() in characters.js), laid on its back on the mattress —
-// reads as a normal LEGO minifigure asleep, rather than an ad-hoc blob.
+// reads as a real child asleep, rather than an ad-hoc blob.
 function buildSleepingChild() {
   const outer = new THREE.Group()
-  const { group } = buildMinifigure(
-    { torso: 0xd4453a, legs: 0x2f3a5f, head: 0xf2c48d, hair: 0x4a3222 },
-    { scale: 0.62 }
-  )
+  const { group } = buildHumanFigure({ torso: 0xd4453a, legs: 0x2f3a5f, hair: 0x4a3222 }, { scale: 0.62 })
   // Standing, the rig's feet are at local y=0 and it extends upward along
   // +y; rotating -90 degrees about X lays it flat, extending along -z from
   // the origin. Center that span on the mattress and rest it on top.
@@ -1323,21 +1321,25 @@ export function buildWorld(scene, models) {
   const streetLamps = buildStreetLamps(models)
   scene.add(streetLamps)
 
-  // A patch of LEGO baseplate in the yard behind the house, where the ground
-  // is "tamed" — it gives way to loose, organic forest terrain further out.
-  // Depth (20 studs = 8 units) is sized to stop at z=-9, right before
+  // A flat, mowed-looking patch of lawn in the yard behind the house, where
+  // the ground is "tamed" — it gives way to loose, organic forest terrain
+  // further out. Depth (8 units) is sized to stop at z=-9, right before
   // GROUND_KEYS' terrain starts dipping toward the stream bank at z=-9.6 —
-  // it used to run to z=-11.4 (26 studs), overlapping that dip while
-  // sitting at a fixed flat height, so walking there looked like sinking
-  // through solid ground (the player's real elevation follows the dip;
-  // the tile itself doesn't).
-  const yardPlate = baseplateTile(34, 20, 0x3f8a3f)
+  // it used to run to z=-11.4, overlapping that dip while sitting at a
+  // fixed flat height, so walking there looked like sinking through solid
+  // ground (the player's real elevation follows the dip; the tile itself
+  // doesn't).
+  const yardLawn = new THREE.Mesh(
+    new THREE.BoxGeometry(34 * STUD, 0.1, 20 * STUD),
+    new THREE.MeshStandardMaterial({ color: 0x2a6b30, flatShading: true, roughness: 0.9 })
+  )
+  yardLawn.receiveShadow = true
   // Kept clear of the house's own floor (its near edge sits right at the
   // back wall, not past it) — it used to overlap 0.7 units into the
-  // interior while sitting higher than the house floor, poking the green
-  // baseplate up through the back window's view from inside.
-  yardPlate.position.set(0, 0.05, HOUSE_BACK_Z - 4)
-  scene.add(yardPlate)
+  // interior while sitting higher than the house floor, poking the lawn up
+  // through the back window's view from inside.
+  yardLawn.position.set(0, 0.05, HOUSE_BACK_Z - 4)
+  scene.add(yardLawn)
 
   const road = buildRoad()
   scene.add(road)

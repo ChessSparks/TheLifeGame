@@ -1,49 +1,73 @@
 import * as THREE from 'three'
-import { wrapFigure } from './characters'
 import { elevationAt, ROAD_Z } from './environment'
-
-// Deliberately all brown/olive/grey — no blues or greens close to dad's
-// teal or the uncle's blue, so the family reads as distinct from the crowd.
-const CLOTHING_COLORS = [0x4a3c2c, 0x5c3a3a, 0x4a4a3a, 0x3a3428, 0x554433, 0x40382a]
-
-function randomMobColors() {
-  const torso = CLOTHING_COLORS[Math.floor(Math.random() * CLOTHING_COLORS.length)]
-  return {
-    torso,
-    legs: 0x2a2a26,
-    head: 0xf2c48d,
-    hair: Math.random() > 0.5 ? 0x2a2015 : 0x1c1c1c,
-  }
-}
 
 function randRange([min, max]) {
   return min + Math.random() * (max - min)
 }
 
 // Crowd figures are background dressing at a distance — cast no shadows
-// (that's the expensive part) and mark materials transparent up front so
-// the retreat fade-out can just ramp opacity later.
+// (that's the expensive part) and get their own material clones (rather
+// than sharing the Soldier prototype's originals) so each member can fade
+// out independently during the retreat (see the 'fading' state below)
+// without fading every other clone at once. Marked transparent up front so
+// that fade can just ramp opacity later.
 function prepMobFigure(mount) {
   const materials = []
   mount.traverse((obj) => {
     if (!obj.isMesh) return
     obj.castShadow = false
-    const mats = Array.isArray(obj.material) ? obj.material : [obj.material]
-    mats.forEach((mat) => {
-      if (mat && !materials.includes(mat)) {
-        mat.transparent = true
-        materials.push(mat)
-      }
-    })
+    obj.material = obj.material.clone()
+    obj.material.transparent = true
+    materials.push(obj.material)
   })
   return materials
 }
 
-// A crowd of full, leg-swinging minifigures (reusing characters.js'
-// wrapFigure) that comes down the road (parallel to the river), turns onto
-// the short driveway to the house, gathers/presses at the door and yard,
-// then retreats back up the road and fades once the attack beat ends.
-export function createMobCrowd(count = 16, options = {}) {
+const RUN_CLIP = 'Armature|Rifle@Run.001'
+const IDLE_CLIP = 'Armature|Rifle@Aim'
+
+// Wraps one Soldier.glb clone with its own AnimationMixer — the model
+// animates via a rigid bone hierarchy, not vertex skinning (see models.js),
+// so a plain .clone() plus a fresh mixer per instance is enough, no
+// SkeletonUtils needed. Switches between a running clip while
+// approaching/retreating and a held-still aiming clip while gathered at the
+// door.
+function wrapSoldierFigure(models) {
+  const mount = new THREE.Object3D()
+  const group = models.soldier.clone()
+  mount.add(group)
+  const materials = prepMobFigure(mount)
+
+  const mixer = new THREE.AnimationMixer(group)
+  const findClip = (name) => models.soldierAnimations.find((a) => a.name === name)
+  const runAction = mixer.clipAction(findClip(RUN_CLIP))
+  const idleAction = mixer.clipAction(findClip(IDLE_CLIP))
+  runAction.play()
+  idleAction.play()
+  idleAction.enabled = false
+  // Stagger each member's run cycle so a crowd doesn't move in lockstep.
+  runAction.time = Math.random() * runAction.getClip().duration
+
+  let running = true
+  function setWalking(value) {
+    if (value === running) return
+    running = value
+    runAction.enabled = running
+    idleAction.enabled = !running
+  }
+
+  function update(dt) {
+    mixer.update(dt)
+  }
+
+  return { mount, materials, setWalking, update }
+}
+
+// A crowd of full, animated soldier figures (see wrapSoldierFigure above)
+// that comes down the road (parallel to the river), turns onto the short
+// driveway to the house, gathers/presses at the door and yard, then
+// retreats back up the road and fades once the attack beat ends.
+export function createMobCrowd(models, count = 16, options = {}) {
   // Spawn far to one side, along the road (fixed-ish Z, varying X), so the
   // crowd visibly travels the road before turning toward the house.
   const spawnXRange = options.spawnXRange ?? [-24, -18]
@@ -65,8 +89,7 @@ export function createMobCrowd(count = 16, options = {}) {
   const members = []
 
   for (let i = 0; i < count; i++) {
-    const figure = wrapFigure(randomMobColors(), {})
-    const materials = prepMobFigure(figure.mount)
+    const figure = wrapSoldierFigure(models)
 
     const x = randRange(spawnXRange)
     const z = randRange(spawnZRange)
@@ -79,7 +102,7 @@ export function createMobCrowd(count = 16, options = {}) {
 
     members.push({
       figure,
-      materials,
+      materials: figure.materials,
       spawnX: x,
       spawnZ: z,
       targetX,
@@ -134,8 +157,9 @@ export function createMobCrowd(count = 16, options = {}) {
           m.stateElapsed = 0
         }
       } else if (m.state === 'gathered') {
-        // Agitated shuffle in place — reads as pressing/banging at the door.
-        m.figure.setWalking(true)
+        // Holds the aiming pose in place — reads as pressing at the door,
+        // without the running clip looking like jogging in place.
+        m.figure.setWalking(false)
       } else if (m.state === 'retreating') {
         m.figure.setWalking(true)
         const arrived = stepToward(m, dt, m.spawnX, m.spawnZ)
